@@ -4,12 +4,16 @@ pub use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode, Run
 pub use ai::agent::orchestration_config::{OrchestrationConfig, OrchestrationConfigStatus};
 #[cfg(any(test, feature = "test-util"))]
 use ai::api_keys::ApiKeyManager;
+#[cfg(any(test, feature = "test-util"))]
+use ai::index::full_source_code_embedding::manager::CodebaseIndexManager;
 pub use repo_metadata::repositories::RepoDetectionSource;
 pub use warp_cli::agent::Harness;
 #[cfg(any(test, feature = "test-util"))]
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warpui::SingletonEntity as _;
 
+#[cfg(any(test, feature = "test-util"))]
+use crate::ai::active_agent_views_model::ActiveAgentViewsModel;
 pub use crate::ai::agent::api::ServerConversationToken;
 pub use crate::ai::agent::conversation::{
     AIConversation, AIConversationAutoexecuteMode, AIConversationId, ConversationStatus,
@@ -57,6 +61,12 @@ pub use crate::ai::blocklist::history_model::{
     BlocklistAIHistoryEvent, BlocklistAIHistoryModel, CloudConversationData,
     ConversationStatusUpdate,
 };
+#[cfg(any(test, feature = "test-util"))]
+use crate::ai::blocklist::local_agent_task_sync_model::LocalAgentTaskSyncModel;
+#[cfg(any(test, feature = "test-util"))]
+use crate::ai::blocklist::orchestration_event_streamer::OrchestrationEventStreamer;
+#[cfg(any(test, feature = "test-util"))]
+use crate::ai::blocklist::orchestration_events::OrchestrationEventService;
 pub use crate::ai::blocklist::telemetry::{
     orchestration_modified_field, BlocklistOrchestrationTelemetryEvent,
     OrchestrationApprovalStatus, OrchestrationEnteredEvent, OrchestrationEntrySource,
@@ -64,8 +74,6 @@ pub use crate::ai::blocklist::telemetry::{
     RunAgentsCardDecisionEvent,
 };
 pub use crate::ai::blocklist::view_util::format_credits;
-#[cfg(any(test, feature = "test-util"))]
-use crate::ai::blocklist::BlocklistAIPermissions;
 pub use crate::ai::blocklist::{
     block_context_from_terminal_model, AIActionStatus, BlocklistAIActionEvent,
     BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController, BlocklistAIInputModel,
@@ -73,6 +81,8 @@ pub use crate::ai::blocklist::{
     PolicyConfigUpdate, RequestFileEditsExecutor, RunAgentsExecutor, RunAgentsExecutorEvent,
     RunAgentsSpawningSnapshot, ShellCommandExecutor, ShellCommandExecutorEvent,
 };
+#[cfg(any(test, feature = "test-util"))]
+use crate::ai::blocklist::{BlocklistAIPermissions, QueuedQueryModel};
 #[cfg(any(test, feature = "test-util"))]
 use crate::ai::cloud_agent_settings::CloudAgentSettings;
 pub use crate::ai::connected_self_hosted_workers::{
@@ -133,6 +143,8 @@ use crate::settings::manager::SettingsManager;
 pub use crate::settings::AISettingsChangedEvent;
 #[cfg(any(test, feature = "test-util"))]
 use crate::settings::{init_and_register_user_preferences, AISettings};
+#[cfg(any(test, feature = "test-util"))]
+use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 pub use crate::terminal::color::{Colors as TerminalColors, List as TerminalColorList};
 pub use crate::terminal::conversation_restoration::{
     prepare_conversation_block_restoration, ConversationBlockRestorationPlan,
@@ -257,6 +269,63 @@ pub fn register_orchestration_test_singletons(app: &mut warpui::App) {
     app.add_singleton_model(|_| {
         crate::ai::document::ai_document_model::AIDocumentModel::new_for_test()
     });
+}
+
+/// Registers the singleton set needed to construct a full TUI session view's
+/// AI stack in tests, on top of
+/// [`register_orchestration_test_singletons`]. Registration order matters:
+/// each model subscribes to singletons registered before it.
+#[cfg(any(test, feature = "test-util"))]
+pub fn register_tui_session_test_singletons(app: &mut warpui::App) {
+    register_orchestration_test_singletons(app);
+    app.add_singleton_model(|_| BlocklistAIHistoryModel::default());
+    // QueuedQueryModel subscribes to history events; register after the
+    // history model is in place.
+    app.add_singleton_model(QueuedQueryModel::new);
+    app.add_singleton_model(|_| CLIAgentSessionsModel::new());
+    app.add_singleton_model(OrchestrationEventService::new);
+    app.add_singleton_model(LocalAgentTaskSyncModel::new);
+    app.add_singleton_model(OrchestrationEventStreamer::new);
+    app.add_singleton_model(|_| ActiveAgentViewsModel::new());
+    app.add_singleton_model(|_| GitRepoModels::new());
+    app.add_singleton_model(|ctx| {
+        CodebaseIndexManager::new_for_test(ServerApiProvider::as_ref(ctx).get(), ctx)
+    });
+    app.add_singleton_model(AgentConversationsModel::new);
+}
+
+/// [`register_tui_session_test_singletons`] plus the remaining singletons a
+/// full `TuiTerminalSessionView` subscribes to.
+#[cfg(any(test, feature = "test-util"))]
+pub fn register_tui_session_view_test_singletons(app: &mut warpui::App) {
+    register_tui_session_test_singletons(app);
+    app.add_singleton_model(|ctx| {
+        crate::changelog_model::ChangelogModel::new(ServerApiProvider::as_ref(ctx).get())
+    });
+    app.add_singleton_model(|_| ai::project_context::model::ProjectContextModel::default());
+    // The TUI auto-updater (which the session view subscribes to) reads its
+    // enablement setting at registration.
+    app.update(crate::settings::TuiAutoupdateSettings::register);
+    // Settings groups the editor-backed input view and transcript read.
+    app.update(crate::settings::CodeSettings::register);
+    app.update(crate::settings::FontSettings::register);
+    app.update(crate::settings::InputSettings::register);
+    app.update(crate::settings::InputModeSettings::register);
+    app.update(crate::settings::SelectionSettings::register);
+    app.update(crate::settings::ScrollSettings::register);
+    app.update(crate::settings::EmacsBindingsSettings::register);
+    app.update(crate::terminal::general_settings::GeneralSettings::register);
+    // Filesystem-watcher singletons the workflow/skill sources read.
+    app.add_singleton_model(|_| repo_metadata::repositories::DetectedRepositories::default());
+    app.add_singleton_model(watcher::HomeDirectoryWatcher::new_for_test);
+    app.add_singleton_model(repo_metadata::watcher::DirectoryWatcher::new);
+    #[cfg(feature = "local_fs")]
+    app.add_singleton_model(repo_metadata::RepoMetadataModel::new);
+    app.add_singleton_model(
+        crate::warp_managed_paths_watcher::WarpManagedPathsWatcher::new_for_testing,
+    );
+    app.add_singleton_model(crate::workflows::local_workflows::LocalWorkflows::new);
+    app.add_singleton_model(crate::ai::skills::SkillManager::new);
 }
 
 #[cfg(test)]

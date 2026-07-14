@@ -33,6 +33,7 @@ mod model_menu;
 mod option_selector;
 mod resume;
 mod run_agents_card_view;
+mod sessions;
 mod skills_menu;
 mod slash_commands;
 mod terminal_background;
