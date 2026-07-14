@@ -92,6 +92,23 @@ fn set_page(app: &mut App, selector: &ViewHandle<TuiOptionSelector>, snapshot: O
     });
 }
 
+#[test]
+fn set_page_recovers_a_selected_custom_text_value() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        let mut with_custom_selection = snapshot(&["warp"], Some("my-host"));
+        with_custom_selection.footer = Some(OptionFooter::CustomText {
+            label: "Custom host…".to_string(),
+        });
+
+        set_page(&mut app, &selector, with_custom_selection);
+
+        let line = highlighted_line(&app, &selector);
+        assert!(line.contains("my-host"));
+        assert!(!line.contains("Custom host…"));
+    });
+}
+
 /// Dispatches a selector action directly to the view.
 fn act(app: &mut App, selector: &ViewHandle<TuiOptionSelector>, action: TuiOptionSelectorAction) {
     selector.update(app, |selector, ctx| selector.handle_action(&action, ctx));
@@ -145,7 +162,7 @@ fn renders_header_position_question_and_initial_highlight() {
         assert!(lines[0].contains("Host"));
         assert!(lines[0].contains("4 of 6"));
         assert!(lines[1].contains("Which host should run the agents?"));
-        // The highlight starts on the snapshot's current value (PRODUCT 23).
+        // The highlight starts on the snapshot's current value.
         assert!(highlighted_line(&app, &selector).contains('b'));
     });
 }
@@ -178,7 +195,7 @@ fn digits_confirm_the_corresponding_visible_row() {
         act(
             &mut app,
             &selector,
-            TuiOptionSelectorAction::SelectVisibleDigit(3),
+            TuiOptionSelectorAction::SelectNumberedOption(3),
         );
         assert_eq!(
             events.borrow().as_slice(),
@@ -197,7 +214,7 @@ fn digits_are_viewport_relative_in_scrolled_lists() {
         let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         set_page(&mut app, &selector, snapshot(&id_refs, Some("row-0")));
         // Scroll two rows down; digit 1 now confirms the third row
-        // (PRODUCT 32), and the clipped top renders an overflow marker.
+        //, and the clipped top renders an overflow marker.
         act(&mut app, &selector, TuiOptionSelectorAction::ScrollBy(2));
         assert!(render_lines(&app, &selector, 60)
             .iter()
@@ -205,7 +222,7 @@ fn digits_are_viewport_relative_in_scrolled_lists() {
         act(
             &mut app,
             &selector,
-            TuiOptionSelectorAction::SelectVisibleDigit(1),
+            TuiOptionSelectorAction::SelectNumberedOption(1),
         );
         assert_eq!(
             events.borrow().as_slice(),
@@ -226,7 +243,7 @@ fn navigation_scrolls_to_keep_the_highlight_visible() {
         for _ in 0..9 {
             act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         }
-        // The highlight scrolled beyond the first viewport (PRODUCT 30, 33).
+        // The highlight scrolled beyond the first viewport.
         assert!(highlighted_line(&app, &selector).contains("row-9"));
         assert!(render_lines(&app, &selector, 60)
             .iter()
@@ -250,7 +267,7 @@ fn disabled_rows_are_highlightable_but_not_confirmable() {
             ),
         );
         // The disabled row can be highlighted and shows its reason
-        // (PRODUCT 36) …
+        // …
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         let line = highlighted_line(&app, &selector);
         assert!(line.contains('b'));
@@ -260,7 +277,7 @@ fn disabled_rows_are_highlightable_but_not_confirmable() {
         act(
             &mut app,
             &selector,
-            TuiOptionSelectorAction::SelectVisibleDigit(2),
+            TuiOptionSelectorAction::SelectNumberedOption(2),
         );
         act(&mut app, &selector, TuiOptionSelectorAction::SelectItem(1));
         assert!(events.borrow().is_empty());
@@ -286,7 +303,7 @@ fn loading_and_empty_states_render_non_selectable_status_rows() {
         assert!(render_lines(&app, &selector, 60)
             .iter()
             .any(|line| line.contains("No harnesses available")));
-        // Nothing is confirmable in an empty list (PRODUCT 37).
+        // Nothing is confirmable in an empty list.
         confirm(&mut app, &selector);
         assert!(events.borrow().is_empty());
     });
@@ -306,7 +323,7 @@ fn failed_state_offers_a_retry_row_that_emits_retry_requested() {
             .iter()
             .any(|line| line.contains("Unable to load secrets")));
         assert!(lines.iter().any(|line| line.contains("Retry")));
-        // The Retry row is reachable by keyboard (PRODUCT 48).
+        // The Retry row is reachable by keyboard.
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         confirm(&mut app, &selector);
         assert_eq!(
@@ -333,7 +350,7 @@ fn custom_text_editor_trims_validates_and_submits() {
         assert!(app.read(|app| selector.as_ref(app).is_editing_custom_text()));
 
         // Whitespace-only input stays editable with a concise error
-        // (PRODUCT 43).
+        //.
         act(
             &mut app,
             &selector,
@@ -358,6 +375,15 @@ fn custom_text_editor_trims_validates_and_submits() {
             }],
         );
         assert!(app.read(|app| !selector.as_ref(app).is_editing_custom_text()));
+        let line = highlighted_line(&app, &selector);
+        assert!(line.contains("my-host"));
+        assert!(!line.contains("Custom host…"));
+
+        // Editing the custom option again starts from the submitted value.
+        confirm(&mut app, &selector);
+        assert!(render_lines(&app, &selector, 60)
+            .iter()
+            .any(|line| line.contains("Custom host…: my-host▏")));
     });
 }
 
@@ -388,7 +414,7 @@ fn create_new_auth_secret_footer_is_ignored() {
         let mut with_footer = snapshot(&["Skip (advanced)"], None);
         with_footer.footer = Some(OptionFooter::CreateNewAuthSecret);
         set_page(&mut app, &selector, with_footer);
-        // Resource creation is out of scope in the TUI (PRODUCT 41): the
+        // Resource creation is out of scope in the TUI: the
         // footer contributes no navigable item.
         assert!(render_lines(&app, &selector, 60)
             .iter()
@@ -404,7 +430,7 @@ fn snapshot_refresh_preserves_the_highlighted_row() {
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         // The highlighted row survives a catalog refresh that reorders rows
-        // (PRODUCT 49).
+        //.
         selector.update(&mut app, |selector, ctx| {
             selector.refresh_snapshot(snapshot(&["c", "a"], Some("a")), ctx);
         });
@@ -426,7 +452,7 @@ fn snapshot_refresh_falls_back_to_the_selected_value_when_the_highlight_vanishes
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         // "b" disappears from the catalog; the highlight falls back to the
         // snapshot's current value rather than silently confirming anything
-        // (PRODUCT 50).
+        //.
         selector.update(&mut app, |selector, ctx| {
             selector.refresh_snapshot(snapshot(&["a", "x"], Some("a")), ctx);
         });

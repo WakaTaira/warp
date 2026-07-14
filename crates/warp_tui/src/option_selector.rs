@@ -1,5 +1,5 @@
 //! [`TuiOptionSelector`]: a reusable single-select option list for TUI
-//! permission prompts (PRODUCT 29-37), rendered from a frontend-neutral
+//! permission prompts, rendered from a frontend-neutral
 //! [`OptionSnapshot`]. One configuration page shows a header (title,
 //! "n of m" position, question), a highlightable option list with viewport
 //! scrolling, optional Loading/Failed/Empty status rows, and an optional
@@ -25,13 +25,13 @@ use warpui_core::{AppContext, Entity, TuiView, TypedActionView, ViewContext};
 use crate::inline_menu::keep_selected_visible;
 use crate::tui_builder::TuiUiBuilder;
 
-/// Maximum option rows visible at once; longer lists scroll (PRODUCT 30, 33).
+/// Maximum option rows visible at once; longer lists scroll.
 pub(crate) const MAX_VISIBLE_OPTION_ROWS: usize = 8;
 
 /// Validation copy shown when the custom-text editor is submitted empty.
 const CUSTOM_TEXT_EMPTY_ERROR: &str = "Enter a value to continue.";
 
-/// Header metadata rendered above the option list (PRODUCT 18).
+/// Header metadata rendered above the option list.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OptionSelectorHeader {
     pub(crate) title: String,
@@ -60,10 +60,10 @@ pub(crate) enum TuiOptionSelectorAction {
     MoveUp,
     MoveDown,
     /// Confirm (or highlight, when disabled) the item at a viewport-relative
-    /// digit position 1-9 (PRODUCT 32).
-    SelectVisibleDigit(u8),
+    /// digit position 1-9.
+    SelectNumberedOption(u8),
     /// Confirm (or highlight, when disabled) the item at an absolute index;
-    /// dispatched by row clicks (PRODUCT 34).
+    /// dispatched by row clicks.
     SelectItem(usize),
     /// Scroll the viewport by whole rows without moving the highlight.
     ScrollBy(isize),
@@ -80,9 +80,9 @@ pub(crate) enum TuiOptionSelectorAction {
 enum SelectorItem {
     /// Index into `snapshot.rows`.
     Row(usize),
-    /// The Retry affordance shown for a `Failed` catalog (PRODUCT 48).
+    /// The Retry affordance shown for a `Failed` catalog.
     Retry,
-    /// The custom-text footer entry point (PRODUCT 42-43).
+    /// The custom-text footer entry point.
     CustomText,
 }
 
@@ -101,6 +101,9 @@ pub(crate) struct TuiOptionSelector {
     scroll_offset: usize,
     /// `Some` while the custom-text footer editor is active.
     custom_text: Option<CustomTextEditor>,
+    /// Submitted value for a custom-text footer. It replaces the generic
+    /// footer label and pre-fills the editor when the user edits it again.
+    custom_text_value: Option<String>,
     /// Per-item mouse state, indexed like [`Self::items`]. Owned here (not
     /// created inline during render) so hover/click state survives
     /// element-tree rebuilds.
@@ -121,12 +124,13 @@ impl TuiOptionSelector {
             selection: InlineMenuSelection::default(),
             scroll_offset: 0,
             custom_text: None,
+            custom_text_value: None,
             item_mouse_states: Vec::new(),
         }
     }
 
     /// Replaces the header and snapshot for a new page: the highlight starts
-    /// on the snapshot's current value (PRODUCT 23) and any in-progress
+    /// on the snapshot's current value and any in-progress
     /// custom-text editing is discarded.
     pub(crate) fn set_page(
         &mut self,
@@ -135,6 +139,7 @@ impl TuiOptionSelector {
         ctx: &mut ViewContext<Self>,
     ) {
         self.header = header;
+        self.custom_text_value = custom_text_value(&snapshot);
         self.snapshot = snapshot;
         self.custom_text = None;
         self.selection.clear();
@@ -145,13 +150,14 @@ impl TuiOptionSelector {
 
     /// Refreshes the snapshot in place after a live catalog change,
     /// preserving the highlighted row when it still exists and falling back
-    /// to the snapshot's selected value otherwise (PRODUCT 49-50).
+    /// to the snapshot's selected value otherwise.
     pub(crate) fn refresh_snapshot(
         &mut self,
         snapshot: OptionSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
         let highlighted = self.highlighted_row_id();
+        self.custom_text_value = custom_text_value(&snapshot);
         self.snapshot = snapshot;
         let target = highlighted
             .filter(|id| self.snapshot.rows.iter().any(|row| &row.id == id))
@@ -168,9 +174,9 @@ impl TuiOptionSelector {
 
     /// Confirms the highlighted item (Enter): enabled rows emit
     /// [`TuiOptionSelectorEvent::Confirmed`]; disabled rows are kept
-    /// highlighted so their reason stays visible (PRODUCT 31, 36). While the
+    /// highlighted so their reason stays visible. While the
     /// custom-text editor is active, Enter validates and submits it instead
-    /// (PRODUCT 43).
+    ///.
     pub(crate) fn confirm_highlighted(&mut self, ctx: &mut ViewContext<Self>) {
         if self.custom_text.is_some() {
             self.submit_custom_text(ctx);
@@ -184,7 +190,7 @@ impl TuiOptionSelector {
 
     /// Handles Escape from the embedding card: cancels active custom-text
     /// editing and reports whether the key was consumed, so the card only
-    /// leaves the page when the selector had nothing to unwind (PRODUCT 27).
+    /// leaves the page when the selector had nothing to unwind.
     pub(crate) fn handle_back(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         if self.custom_text.take().is_some() {
             ctx.notify();
@@ -203,14 +209,14 @@ impl TuiOptionSelector {
         }
         match &self.snapshot.footer {
             Some(OptionFooter::CustomText { .. }) => items.push(SelectorItem::CustomText),
-            // Resource creation is out of scope in the TUI (PRODUCT 41).
+            // Resource creation is out of scope in the TUI.
             Some(OptionFooter::CreateNewAuthSecret) | None => {}
         }
         items
     }
 
     /// Whether the item can be confirmed. Disabled rows stay highlightable
-    /// but unconfirmable (PRODUCT 36).
+    /// but unconfirmable.
     fn item_is_confirmable(&self, item: SelectorItem) -> bool {
         match item {
             SelectorItem::Row(index) => self
@@ -244,7 +250,8 @@ impl TuiOptionSelector {
                         .rows
                         .get(*index)
                         .is_some_and(|row| row.id == id),
-                    SelectorItem::Retry | SelectorItem::CustomText => false,
+                    SelectorItem::CustomText => self.custom_text_value.as_ref() == Some(&id),
+                    SelectorItem::Retry => false,
                 })
             })
             .or(if items.is_empty() { None } else { Some(0) });
@@ -294,7 +301,7 @@ impl TuiOptionSelector {
     }
 
     /// Confirms the item at `index` when enabled; otherwise highlights it so
-    /// its disabled reason is surfaced (PRODUCT 36).
+    /// its disabled reason is surfaced.
     fn confirm_item(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
         let items = self.items();
         let Some(item) = items.get(index).copied() else {
@@ -319,13 +326,16 @@ impl TuiOptionSelector {
             }
             SelectorItem::Retry => ctx.emit(TuiOptionSelectorEvent::RetryRequested),
             SelectorItem::CustomText => {
-                self.custom_text = Some(CustomTextEditor::default());
+                self.custom_text = Some(CustomTextEditor {
+                    buffer: self.custom_text_value.clone().unwrap_or_default(),
+                    error: None,
+                });
             }
         }
         ctx.notify();
     }
 
-    /// Validates and submits the custom-text editor (PRODUCT 43): the value
+    /// Validates and submits the custom-text editor: the value
     /// is trimmed; empty input stays editable with a concise error.
     fn submit_custom_text(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(editor) = &mut self.custom_text else {
@@ -336,13 +346,15 @@ impl TuiOptionSelector {
             editor.error = Some(CUSTOM_TEXT_EMPTY_ERROR.to_string());
         } else {
             self.custom_text = None;
+            self.snapshot.selected_id = Some(value.clone());
+            self.custom_text_value = Some(value.clone());
             ctx.emit(TuiOptionSelectorEvent::CustomTextSubmitted { value });
         }
         ctx.notify();
     }
 
     /// Scrolls the viewport by `rows` without moving the highlight
-    /// (PRODUCT 35).
+    ///.
     fn scroll_by(&mut self, rows: isize, ctx: &mut ViewContext<Self>) {
         let items_len = self.items().len();
         let max_offset = items_len.saturating_sub(MAX_VISIBLE_OPTION_ROWS);
@@ -485,8 +497,7 @@ impl TuiOptionSelector {
     }
 
     /// The option list: visible window of items with digit prefixes, plus
-    /// non-selectable status rows for Loading/Failed/Empty (PRODUCT 37,
-    /// 47-48).
+    /// non-selectable status rows for Loading/Failed/Empty.
     fn render_list(&self, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
         let items = self.items();
         let mut column = TuiFlex::column();
@@ -525,7 +536,9 @@ impl TuiOptionSelector {
                         self.render_custom_text_editor(editor, label, builder)
                     }
                     (Some(OptionFooter::CustomText { label }), None) => self.render_virtual_row(
-                        label.clone(),
+                        self.custom_text_value
+                            .clone()
+                            .unwrap_or_else(|| label.clone()),
                         digit,
                         is_highlighted,
                         builder.primary_text_style(),
@@ -535,7 +548,7 @@ impl TuiOptionSelector {
                 },
             };
             // Each visible row is clickable through its own persistent
-            // mouse-state handle (PRODUCT 34).
+            // mouse-state handle.
             let element = match self.item_mouse_states.get(index) {
                 Some(mouse_state) => TuiHoverable::new(mouse_state.clone(), element)
                     .on_click(move |event_ctx, _| {
@@ -586,6 +599,18 @@ impl TuiOptionSelector {
     }
 }
 
+/// A custom-text selection is encoded as a selected id that is not one of
+/// the snapshot's fixed rows.
+fn custom_text_value(snapshot: &OptionSnapshot) -> Option<String> {
+    if !matches!(snapshot.footer, Some(OptionFooter::CustomText { .. })) {
+        return None;
+    }
+    snapshot
+        .selected_id
+        .as_ref()
+        .filter(|selected| !snapshot.rows.iter().any(|row| &row.id == *selected))
+        .cloned()
+}
 impl Entity for TuiOptionSelector {
     type Event = TuiOptionSelectorEvent;
 }
@@ -618,7 +643,7 @@ impl TypedActionView for TuiOptionSelector {
         match action {
             TuiOptionSelectorAction::MoveUp => self.move_highlight(false, ctx),
             TuiOptionSelectorAction::MoveDown => self.move_highlight(true, ctx),
-            TuiOptionSelectorAction::SelectVisibleDigit(digit) => {
+            TuiOptionSelectorAction::SelectNumberedOption(digit) => {
                 let index = self.scroll_offset + usize::from(*digit) - 1;
                 self.confirm_item(index, ctx);
             }
@@ -727,7 +752,7 @@ impl TuiElement for SelectorInputElement {
                     key => match key.parse::<u8>() {
                         Ok(digit @ 1..=9) => {
                             event_ctx.dispatch_typed_action(
-                                TuiOptionSelectorAction::SelectVisibleDigit(digit),
+                                TuiOptionSelectorAction::SelectNumberedOption(digit),
                             );
                             true
                         }

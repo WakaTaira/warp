@@ -34,6 +34,9 @@ A `TuiView` + `TypedActionView` (`TuiOptionSelector`) rendering one page:
   navigable.
 - Footer: `OptionFooter::CustomText { label }` appends a selectable entry that, when
   confirmed, opens a one-line custom-text editor rendered in place of the entry.
+  Submitting a value replaces the generic footer label with that value, keeps the
+  footer highlighted, and pre-fills the value when it is edited again. A selected id
+  not present in the fixed rows restores this custom value when a page is rebuilt.
   `OptionFooter::CreateNewAuthSecret` is ignored (resource creation is out of scope
   in the TUI).
 
@@ -95,8 +98,9 @@ until the card slice; that slice removes the allow.
   to keep the highlight visible with overflow markers; disabled rows being
   highlightable but not confirmable via Enter, digit, or click; Loading/Empty status
   rows being non-selectable; the Failed state's keyboard-reachable Retry row;
-  custom-text trim/validate/submit and Backspace; Back cancelling custom-text editing
-  before leaving the page; the ignored `CreateNewAuthSecret` footer; snapshot-refresh
+  custom-text trim/validate/submit, submitted-value rendering/re-editing/restoration,
+  and Backspace; Back cancelling custom-text editing before leaving the page; the
+  ignored `CreateNewAuthSecret` footer; snapshot-refresh
   highlight preservation and selected-value fallback; badge rendering; and paste being
   consumed only while the custom-text editor is active (first line only).
 - Tests host the selector under `test_fixtures::TestHostView` in a headless TUI
