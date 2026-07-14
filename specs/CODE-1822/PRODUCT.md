@@ -34,18 +34,17 @@ The Warp TUI gains an interactive permission card for an active `RunAgents` requ
 
 ### Acceptance card
 9. The initial card shows:
-   - “Can I start additional agents for this task?”
-   - The agent-provided summary of why orchestration is requested.
-   - Every proposed agent's name.
-   - The current run-wide location, harness, and model.
-   - For Cloud runs, the current API-key choice when applicable, host, and environment.
+   - “Can I start additional agents for this task?” on a header row with a stronger tint than the body.
+   - Every proposed agent's name, on one wrapping line with muted bullet separators. (The agent-provided summary streams into the transcript above the card and is not repeated inside it.)
+   - The current run-wide location, harness, and model as one wrapping inline `Label: value` row with muted bullet separators and bold values.
+   - For Cloud runs, the current API-key choice when applicable, host, and environment, appended to the same inline row.
 10. Returning from configuration updates the displayed run-wide values. The user always reviews the final values on the acceptance card before launching.
-11. Every proposed agent has a deterministic color-and-glyph identity that remains stable for the life of the request, including across re-renders and configuration edits.
+11. Every proposed agent has a deterministic color-and-glyph identity that remains stable for the life of the request, including across re-renders and configuration edits. The agent's glyph and name render in the identity color, with the name bolded.
 12. Agent identities use theme-derived ANSI colors rather than fixed RGB values. The palette provides at least 32 distinct color-and-glyph combinations, covering the current maximum agents in one request.
 13. If a future request exceeds the number of unique combinations, the palette cycles deterministically. No agent is omitted and rendering does not fail.
-14. The card uses the orchestration treatment from the designs: one 10%-magenta-tinted body/header surface, a yellow square attention glyph, primary text for content, muted separators and metadata, and bold magenta emphasis for selected configuration options.
+14. The card uses the orchestration treatment from the designs: a 10%-magenta-tinted body under a doubly-tinted header row, a yellow square attention glyph, primary text for content, muted separators, and bold magenta emphasis for selected configuration options.
 15. Text and agent identities wrap and reflow at narrow terminal widths. If the complete card cannot fit vertically, it remains navigable without clipping required configuration or actions.
-16. On the acceptance card:
+16. On the acceptance card (footer copy: `Enter to accept  Ctrl + E to edit Ctrl + C to reject`):
    - Enter accepts the current configuration.
    - Ctrl+E opens configuration.
    - Ctrl+C rejects the request.

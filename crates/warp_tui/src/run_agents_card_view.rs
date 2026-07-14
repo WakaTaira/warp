@@ -769,89 +769,43 @@ impl TuiRunAgentsCardView {
             })
     }
 
-    /// One `label: value` metadata row with a bold selected value.
-    fn render_metadata_row(
-        label: &str,
-        value: String,
-        builder: &TuiUiBuilder,
-    ) -> Box<dyn TuiElement> {
-        TuiText::from_spans([
-            (format!("{label:<12}"), builder.muted_text_style()),
-            (value, builder.orchestration_selected_value_style()),
-        ])
-        .truncate()
-        .finish()
-    }
-
-    /// The acceptance card body.
-    fn render_acceptance(&self, app: &AppContext, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
-        let state = &self.orchestration_edit_state.orchestration_config_state;
-        let mut column = TuiFlex::column();
-
-        let summary = if self.request_fields.summary.trim().is_empty() {
-            format!(
-                "Spawn {} agent(s) to address this task.",
-                self.request_fields.agent_run_configs.len()
-            )
-        } else {
-            self.request_fields.summary.clone()
-        };
-        column.add_child(
-            TuiContainer::new(
-                TuiText::new(summary)
-                    .with_style(builder.primary_text_style())
-                    .finish(),
-            )
-            .with_padding_top(1)
-            .finish(),
-        );
-
-        // Agent list: every proposed agent's name with its identity.
-        column.add_child(
-            TuiContainer::new(
-                TuiText::new(format!(
-                    "Agents ({})",
-                    self.request_fields.agent_run_configs.len()
-                ))
-                .with_style(builder.muted_text_style())
-                .truncate()
-                .finish(),
-            )
-            .with_padding_top(1)
-            .finish(),
-        );
-        for (config, identity) in self
+    /// The wrapping agent-identity line: every proposed agent's glyph and
+    /// name in its identity color, separated by muted bullets.
+    fn render_agent_identity_line(&self, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
+        let mut spans: Vec<(String, _)> = Vec::new();
+        for (index, (config, identity)) in self
             .request_fields
             .agent_run_configs
             .iter()
             .zip(self.agent_identities())
+            .enumerate()
         {
-            column.add_child(
-                TuiText::from_spans([
-                    (
-                        format!("{} ", identity.glyph),
-                        identity.style.add_modifier(Modifier::BOLD),
-                    ),
-                    (config.name.clone(), builder.primary_text_style()),
-                ])
-                .truncate()
-                .finish(),
-            );
+            if index > 0 {
+                spans.push(("  •  ".to_string(), builder.muted_text_style()));
+            }
+            spans.push((format!("{} ", identity.glyph), identity.style));
+            spans.push((
+                config.name.clone(),
+                identity.style.add_modifier(Modifier::BOLD),
+            ));
         }
+        TuiText::from_spans(spans).finish()
+    }
 
-        // Run-wide configuration values.
+    /// The wrapping inline `Label: value` metadata line with muted bullet
+    /// separators and bold values.
+    fn render_metadata_line(
+        &self,
+        app: &AppContext,
+        builder: &TuiUiBuilder,
+    ) -> Box<dyn TuiElement> {
+        let state = &self.orchestration_edit_state.orchestration_config_state;
         let is_remote = state.execution_mode.is_remote();
-        let mut metadata = TuiFlex::column();
-        metadata.add_child(Self::render_metadata_row(
+        let mut entries: Vec<(&str, String)> = vec![(
             "Location",
             if is_remote { "Cloud" } else { "Local" }.to_string(),
-            builder,
-        ));
-        metadata.add_child(Self::render_metadata_row(
-            "Harness",
-            self.harness_label(app),
-            builder,
-        ));
+        )];
+        entries.push(("Harness", self.harness_label(app)));
         if is_remote {
             if should_show_auth_secret_picker(state) {
                 let api_key = match &state.auth_secret_selection {
@@ -861,7 +815,7 @@ impl TuiRunAgentsCardView {
                         "Select an API key".to_string()
                     }
                 };
-                metadata.add_child(Self::render_metadata_row("API key", api_key, builder));
+                entries.push(("API key", api_key));
             }
             let host = match &state.execution_mode {
                 RunAgentsExecutionMode::Remote { worker_host, .. }
@@ -873,33 +827,59 @@ impl TuiRunAgentsCardView {
                     ORCHESTRATION_WARP_WORKER_HOST.to_string()
                 }
             };
-            metadata.add_child(Self::render_metadata_row("Host", host, builder));
+            entries.push(("Host", host));
             let environment_id = match &state.execution_mode {
                 RunAgentsExecutionMode::Remote { environment_id, .. } => environment_id.clone(),
                 RunAgentsExecutionMode::Local => String::new(),
             };
-            let environment = Self::label_for_id(
-                &environment_snapshot(state, app),
-                &environment_id,
-                "Empty environment",
-            );
-            metadata.add_child(Self::render_metadata_row(
+            entries.push((
                 "Environment",
-                environment,
-                builder,
+                Self::label_for_id(
+                    &environment_snapshot(state, app),
+                    &environment_id,
+                    "Empty environment",
+                ),
             ));
         }
-        let model = Self::label_for_id(
-            &model_snapshot(state, app),
-            &state.model_id,
-            "Default model",
-        );
-        metadata.add_child(Self::render_metadata_row("Model", model, builder));
+        entries.push((
+            "Model",
+            Self::label_for_id(
+                &model_snapshot(state, app),
+                &state.model_id,
+                "Default model",
+            ),
+        ));
+
+        let mut spans: Vec<(String, _)> = Vec::new();
+        for (index, (label, value)) in entries.into_iter().enumerate() {
+            if index > 0 {
+                spans.push(("  •  ".to_string(), builder.muted_text_style()));
+            }
+            spans.push((format!("{label}: "), builder.primary_text_style()));
+            spans.push((value, builder.orchestration_selected_value_style()));
+        }
+        TuiText::from_spans(spans).finish()
+    }
+
+    /// The acceptance card body: the agent list and the inline run-wide
+    /// configuration values. The request summary is not repeated here; it
+    /// streams into the transcript above the card.
+    fn render_acceptance(&self, app: &AppContext, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
+        let state = &self.orchestration_edit_state.orchestration_config_state;
+        let mut column = TuiFlex::column();
+
         column.add_child(
-            TuiContainer::new(metadata.finish())
-                .with_padding_top(1)
-                .finish(),
+            TuiText::new(format!(
+                "Agents ({}):",
+                self.request_fields.agent_run_configs.len()
+            ))
+            .with_style(builder.primary_text_style())
+            .truncate()
+            .finish(),
         );
+        column.add_child(self.render_agent_identity_line(builder));
+        column.add_child(TuiText::new(" ").finish());
+        column.add_child(self.render_metadata_line(app, builder));
 
         // Inline validation or the soft empty-env nudge.
         if let Some(error) = &self.accept_error {
@@ -942,10 +922,10 @@ impl TuiRunAgentsCardView {
             CardMode::Acceptance => vec![
                 ("Enter ".to_string(), builder.primary_text_style()),
                 ("to accept  ".to_string(), builder.muted_text_style()),
-                ("Ctrl-E ".to_string(), builder.primary_text_style()),
-                ("to configure  ".to_string(), builder.muted_text_style()),
-                ("Ctrl-C ".to_string(), builder.primary_text_style()),
-                ("to reject".to_string(), builder.muted_text_style()),
+                ("Ctrl + E".to_string(), builder.primary_text_style()),
+                (" to edit ".to_string(), builder.muted_text_style()),
+                ("Ctrl + C".to_string(), builder.primary_text_style()),
+                (" to reject".to_string(), builder.muted_text_style()),
             ],
             CardMode::Configuring { .. } => vec![
                 ("Enter ".to_string(), builder.primary_text_style()),
@@ -1005,24 +985,25 @@ impl TuiView for TuiRunAgentsCardView {
         }
 
         let builder = TuiUiBuilder::from_app(app);
+        // The header row carries a stronger tint than the body, per the
+        // design's stacked header overlays.
+        let header = TuiContainer::new(self.render_title(&builder))
+            .with_background(builder.orchestration_header_background())
+            .with_padding_x(1)
+            .finish();
         let body = match self.mode {
             CardMode::Acceptance => self.render_acceptance(app, &builder),
-            CardMode::Configuring { .. } => TuiContainer::new(self.render_configuring())
-                .with_padding_top(1)
-                .with_padding_x(2)
-                .finish(),
+            CardMode::Configuring { .. } => self.render_configuring(),
         };
-        let card = TuiContainer::new(
-            TuiFlex::column()
-                .child(self.render_title(&builder))
-                .child(body)
-                .finish(),
-        )
-        .with_background(builder.orchestration_surface_background())
-        .with_padding_x(1)
-        .finish();
+        let body = TuiContainer::new(body)
+            .with_background(builder.orchestration_surface_background())
+            .with_padding_x(3)
+            .with_padding_top(1)
+            .with_padding_bottom(1)
+            .finish();
         TuiFlex::column()
-            .child(card)
+            .child(header)
+            .child(body)
             .child(self.render_footer(&builder))
             .finish()
     }

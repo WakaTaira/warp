@@ -11,7 +11,7 @@ use warp::tui_export::{
 };
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, ModelHandle};
-use warpui_core::elements::tui::{TuiBufferExt, TuiRect};
+use warpui_core::elements::tui::{Modifier, TuiBufferExt, TuiRect};
 use warpui_core::presenter::tui::{TuiFrame, TuiPresenter};
 use warpui_core::{App, TypedActionView as _, ViewHandle, WindowInvalidation};
 
@@ -318,24 +318,95 @@ fn acceptance_card_renders_required_content_across_widths() {
         for width in [40u16, 80, 132] {
             let lines = render_card_lines(&mut app, &fixture.card, width);
             let all = lines.join("\n");
-            // question, summary, agent names, and run-wide values.
+            // question, agent names, and run-wide values.
             assert!(all.contains("Can I start"), "width {width}: {all}");
-            assert!(all.contains("Parallelize the task."), "width {width}");
-            assert!(all.contains("Agents (2)"), "width {width}");
+            assert!(all.contains("Agents (2):"), "width {width}");
             assert!(all.contains("researcher"), "width {width}");
             assert!(all.contains("reviewer"), "width {width}");
-            assert!(all.contains("Location"), "width {width}");
+            assert!(all.contains("Location:"), "width {width}");
             assert!(all.contains("Cloud"), "width {width}");
-            assert!(all.contains("Harness"), "width {width}");
-            assert!(all.contains("Model"), "width {width}");
-            assert!(all.contains("Host"), "width {width}");
-            assert!(all.contains("Environment"), "width {width}");
-            // the footer hints replace the input footer and
-            // wrap (rather than clip) at narrow widths.
-            assert!(all.contains("Enter to accept"), "width {width}: {all}");
-            assert!(all.contains("Ctrl-E to configure"), "width {width}: {all}");
-            assert!(all.contains("Ctrl-C to reject"), "width {width}: {all}");
+            assert!(all.contains("Harness:"), "width {width}");
+            assert!(all.contains("Model:"), "width {width}");
+            assert!(all.contains("Host:"), "width {width}");
+            assert!(all.contains("Environment:"), "width {width}");
+            // The footer hints replace the input footer and wrap (rather
+            // than clip) at narrow widths; compare whitespace-normalized
+            // so a wrapped key name still matches.
+            let flat = all.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains("Enter to accept"), "width {width}: {all}");
+            assert!(flat.contains("Ctrl + E to edit"), "width {width}: {all}");
+            assert!(flat.contains("Ctrl + C to reject"), "width {width}: {all}");
         }
+    });
+}
+
+#[test]
+fn acceptance_card_matches_the_design_layout_and_styles() {
+    App::test((), |mut app| async move {
+        let mut seven_agents = request("oz", remote("", "warp"));
+        seven_agents.agent_run_configs = [
+            "infrastructure-bot",
+            "ui-implementer",
+            "dependency-bot",
+            "verification-bot",
+            "design-bot",
+            "event-pipeline-monitor",
+            "performance-regression-guard",
+        ]
+        .into_iter()
+        .map(|name| RunAgentsAgentRunConfig {
+            name: name.to_string(),
+            prompt: "work".to_string(),
+            title: name.to_string(),
+        })
+        .collect();
+        let fixture = blocked_card(&mut app, &seven_agents);
+
+        let lines = render_card_lines(&mut app, &fixture.card, 80);
+        // Header row, blank body padding row, then the inset agent list.
+        assert!(lines[0].starts_with(" ■ Can I start additional agents for this task?"));
+        assert!(lines[1].trim().is_empty());
+        assert!(lines[2].starts_with("   Agents (7):"));
+        // The glyph is hash-assigned; assert the inset and the first name.
+        assert!(lines[3].starts_with("   "), "{}", lines[3]);
+        assert!(lines[3].contains("infrastructure-bot"), "{}", lines[3]);
+        // The identity line wraps with muted bullet separators, and the
+        // metadata renders as one inline row after a blank separator.
+        assert!(lines[3].contains(" • "), "{}", lines[3]);
+        let metadata = lines
+            .iter()
+            .find(|line| line.contains("Location: "))
+            .expect("inline metadata row");
+        assert!(metadata.contains("Location: Cloud"));
+        assert!(metadata.contains(" • "));
+        assert!(metadata.contains("Harness: "));
+
+        let frame = render_card_frame(&mut app, &fixture.card, 80);
+        let builder_styles = app.read(|app| {
+            let builder = TuiUiBuilder::from_app(app);
+            (
+                builder.orchestration_header_background(),
+                builder.orchestration_surface_background(),
+            )
+        });
+        let (header_bg, surface_bg) = builder_styles;
+        // Distinct header tint over the body tint; footer stays untinted.
+        assert_ne!(header_bg, surface_bg);
+        assert_eq!(frame.buffer[(0, 0)].bg, header_bg);
+        assert_eq!(frame.buffer[(0, 2)].bg, surface_bg);
+        let footer_row = render_card_lines(&mut app, &fixture.card, 80)
+            .iter()
+            .position(|line| line.contains("Enter to accept"))
+            .expect("acceptance footer row") as u16;
+        assert_ne!(frame.buffer[(0, footer_row)].bg, header_bg);
+        assert_ne!(frame.buffer[(0, footer_row)].bg, surface_bg);
+        // The agent glyph and name share the identity color, with the
+        // name bolded; identity colors are set (not default foreground).
+        let glyph_cell = &frame.buffer[(3, 3)];
+        let name_cell = &frame.buffer[(5, 3)];
+        assert_eq!(glyph_cell.fg, name_cell.fg);
+        assert!(name_cell.modifier.contains(Modifier::BOLD));
+        assert!(!glyph_cell.modifier.contains(Modifier::BOLD));
     });
 }
 
@@ -349,6 +420,11 @@ fn agent_identities_stay_stable_across_rerenders_and_edits() {
                 .into_iter()
                 .find(|line| line.contains("researcher"))
                 .expect("agent row")
+                .split("•")
+                .find(|entry| entry.contains("researcher"))
+                .expect("researcher entry")
+                .trim()
+                .to_string()
         }
         let before = agent_line(&mut app, &fixture);
         // Stable across plain re-renders…
@@ -450,14 +526,20 @@ fn configure_walks_pages_and_esc_returns_to_acceptance() {
         assert!(all.contains("Esc to go back"));
 
         let frame = render_card_frame(&mut app, &fixture.card, 80);
-        let surface =
-            app.read(|app| TuiUiBuilder::from_app(app).orchestration_surface_background());
-        assert_eq!(frame.buffer[(0, 0)].bg, surface);
+        let (header_bg, surface_bg) = app.read(|app| {
+            let builder = TuiUiBuilder::from_app(app);
+            (
+                builder.orchestration_header_background(),
+                builder.orchestration_surface_background(),
+            )
+        });
+        assert_eq!(frame.buffer[(0, 0)].bg, header_bg);
+        assert_eq!(frame.buffer[(0, 2)].bg, surface_bg);
         let footer_row = lines
             .iter()
             .position(|line| line.contains("Enter to accept"))
             .expect("configuration footer row");
-        assert_ne!(frame.buffer[(0, footer_row as u16)].bg, surface);
+        assert_ne!(frame.buffer[(0, footer_row as u16)].bg, surface_bg);
 
         // Esc returns to the acceptance card without deciding.
         act(&mut app, &fixture.card, TuiRunAgentsCardAction::Back);
