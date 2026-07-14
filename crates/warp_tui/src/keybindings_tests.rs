@@ -23,6 +23,6 @@ fn tui_ownership_is_by_name_prefix_or_group() {
 #[test]
 fn tui_binding_registration_passes_the_cross_surface_validators() {
     App::test((), |mut app| async move {
-        app.update(|ctx| super::init(ctx));
+        app.update(super::init);
     });
 }

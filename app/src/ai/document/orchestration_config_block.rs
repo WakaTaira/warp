@@ -973,7 +973,7 @@ impl OrchestrationConfigBlockView {
                             .orchestration_config_state
                             .execution_mode,
                     ),
-                    harness: OrchestrationHarnessKind::from_str(
+                    harness: OrchestrationHarnessKind::from_harness_type(
                         &self
                             .orchestration_edit_state
                             .orchestration_config_state
@@ -1013,7 +1013,7 @@ impl OrchestrationConfigBlockView {
             BlocklistOrchestrationTelemetryEvent::AgentProposedConfig(AgentProposedConfigEvent {
                 conversation_id: self.conversation_id,
                 plan_id: (!self.plan_id.is_empty()).then(|| self.plan_id.clone()),
-                harness: OrchestrationHarnessKind::from_str(
+                harness: OrchestrationHarnessKind::from_harness_type(
                     &self
                         .orchestration_edit_state
                         .orchestration_config_state

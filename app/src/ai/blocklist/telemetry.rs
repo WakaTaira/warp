@@ -112,7 +112,10 @@ pub enum OrchestrationHarnessKind {
 }
 
 impl OrchestrationHarnessKind {
-    pub fn from_str(harness_type: &str) -> Self {
+    /// Buckets a raw harness_type string into the closed telemetry set.
+    /// Not `FromStr`: infallible and analytics-shaped, so a distinct name
+    /// avoids clashing with the standard trait method.
+    pub fn from_harness_type(harness_type: &str) -> Self {
         match harness_type {
             "oz" | "" => Self::Oz,
             "claude" | "claude-code" | "claude_code" => Self::ClaudeCode,

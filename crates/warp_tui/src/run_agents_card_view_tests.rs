@@ -44,6 +44,20 @@ fn request(harness: &str, execution_mode: RunAgentsExecutionMode) -> RunAgentsRe
     }
 }
 
+#[test]
+fn only_the_model_page_is_searchable() {
+    assert!(ConfigPage::Model.is_searchable());
+    for page in [
+        ConfigPage::Location,
+        ConfigPage::Harness,
+        ConfigPage::ApiKey,
+        ConfigPage::Host,
+        ConfigPage::Environment,
+    ] {
+        assert!(!page.is_searchable(), "{page:?}");
+    }
+}
+
 /// A Cloud execution mode with the given env/host.
 fn remote(environment_id: &str, worker_host: &str) -> RunAgentsExecutionMode {
     RunAgentsExecutionMode::Remote {
@@ -524,6 +538,7 @@ fn configure_walks_pages_and_esc_returns_to_acceptance() {
         assert!(lines[3].trim().is_empty());
         assert!(lines[4].starts_with("   Where should the agent run?"));
         assert!(lines[5].starts_with("   (1) Cloud"));
+        assert!(!all.contains("Search:"));
         assert!(all.contains("Enter to accept"));
         assert!(all.contains("Tab or ← → to navigate"));
         assert!(all.contains("Esc to go back"));
@@ -619,6 +634,7 @@ fn switching_to_local_mid_flow_collapses_the_sequence() {
         let all = render_card_lines(&mut app, &fixture.card, 80).join("\n");
         assert!(all.contains("Which model should the agent use?"), "{all}");
         assert!(all.contains("2 of 2"), "{all}");
+        assert!(all.contains("Search:"), "{all}");
     });
 }
 

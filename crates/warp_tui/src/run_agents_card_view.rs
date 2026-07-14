@@ -135,6 +135,11 @@ impl ConfigPage {
             Self::Model => format!("Which model should the {agent} use?"),
         }
     }
+
+    /// Whether this page opts into the selector's pinned search editor.
+    fn is_searchable(self) -> bool {
+        matches!(self, Self::Model)
+    }
 }
 
 /// Whether the card shows the acceptance summary or a configuration page.
@@ -198,6 +203,7 @@ pub(crate) struct TuiRunAgentsCardView {
 impl TuiRunAgentsCardView {
     /// Creates a card for one pending `RunAgents` action and wires its model
     /// subscriptions.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         action: AIAgentAction,
         request: &RunAgentsRequest,
@@ -208,7 +214,7 @@ impl TuiRunAgentsCardView {
         is_restored: bool,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
-        let selector = ctx.add_typed_action_tui_view(|_| TuiOptionSelector::new());
+        let selector = ctx.add_typed_action_tui_view(TuiOptionSelector::new);
         ctx.subscribe_to_view(&selector, |me, _, event, ctx| {
             me.handle_selector_event(event, ctx);
         });
@@ -473,7 +479,7 @@ impl TuiRunAgentsCardView {
         };
         let snapshot = self.snapshot_for_page(page, ctx);
         self.selector.update(ctx, |selector, ctx| {
-            selector.set_page(header, snapshot, ctx);
+            selector.set_page(header, snapshot, page.is_searchable(), ctx);
         });
         ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
         ctx.notify();

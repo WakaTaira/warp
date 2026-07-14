@@ -721,7 +721,7 @@ impl RunAgentsCardView {
                     plan_id: (!self.card.plan_id.is_empty()).then(|| self.card.plan_id.clone()),
                     decision,
                     agent_count: self.card.agent_run_configs.len(),
-                    harness: OrchestrationHarnessKind::from_str(
+                    harness: OrchestrationHarnessKind::from_harness_type(
                         &self
                             .orchestration_edit_state
                             .orchestration_config_state
