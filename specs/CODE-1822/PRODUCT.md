@@ -24,7 +24,7 @@ The Warp TUI gains an interactive permission card for an active `RunAgents` requ
 ## Behavior
 ### Active interaction and input visibility
 1. When a `RunAgents` request reaches the front of the confirmation queue and awaits a decision, its permission card becomes the active interaction.
-2. While the permission card or one of its configuration pages is active, the main input row, input cursor, and normal input footer are hidden. The permission surface provides the relevant action hints in their place.
+2. While the permission card or one of its configuration pages is active, the main input row, input cursor, normal input footer, and the in-progress warping indicator / last-response summary row are hidden. The permission surface provides the relevant action hints in their place.
 3. Hiding the input preserves its draft text, cursor position, selection, editor mode, and scroll state without modification.
 4. Pending requests behind the active front-of-queue blocker do not independently affect input visibility or focus.
 5. Accepting or rejecting the request ends the blocking interaction immediately, even while an accepted request continues into a spawning state. The main input and footer reappear with their preserved state, and prior focus is restored.
@@ -40,9 +40,9 @@ The Warp TUI gains an interactive permission card for an active `RunAgents` requ
    - For Cloud runs, the current API-key choice when applicable, host, and environment, appended to the same inline row.
 10. Returning from configuration updates the displayed run-wide values. The user always reviews the final values on the acceptance card before launching.
 11. Every proposed agent has a deterministic color-and-glyph identity that remains stable for the life of the request, including across re-renders and configuration edits. The agent's glyph and name render in the identity color, with the name bolded.
-12. Agent identities use theme-derived ANSI colors rather than fixed RGB values. The palette provides at least 32 distinct color-and-glyph combinations, covering the current maximum agents in one request.
+12. Agent identities use theme-derived ANSI colors rather than fixed RGB values. The palette provides at least 32 distinct color-and-glyph combinations, covering the current maximum agents in one request. Within one request, agents keep both a unique glyph and a unique color until the glyph or color set runs out; only then does that dimension repeat.
 13. If a future request exceeds the number of unique combinations, the palette cycles deterministically. No agent is omitted and rendering does not fail.
-14. The card uses the orchestration treatment from the designs: a 10%-magenta-tinted body under a doubly-tinted header row, a yellow square attention glyph, primary text for content, muted separators, and bold magenta emphasis for selected configuration options.
+14. The card uses the orchestration treatment from the designs: a 10%-magenta-tinted body under a doubly-tinted header row, a yellow square attention glyph, primary text for content, muted separators, and bold magenta emphasis for selected configuration options. One blank untinted row separates the card from its keybinding footer.
 15. Text and agent identities wrap and reflow at narrow terminal widths. If the complete card cannot fit vertically, it remains navigable without clipping required configuration or actions.
 16. On the acceptance card (footer copy: `Enter to accept  Ctrl + E to edit Ctrl + C to reject`):
    - Enter accepts the current configuration.

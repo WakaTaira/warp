@@ -156,9 +156,8 @@ impl TuiToolCallView {
 }
 
 /// The front-of-queue blocking interaction owned by an agent block: the
-/// pending action awaiting a decision plus the child view that renders it.
+/// child view rendering the pending action that awaits a decision.
 pub(super) struct TuiBlockingChild {
-    pub(super) action_id: AIAgentActionId,
     pub(super) view: ViewHandle<TuiRunAgentsCardView>,
 }
 
@@ -452,12 +451,10 @@ impl TuiAIBlock {
             return None;
         }
         match self.action_views.get(&action_id)? {
-            TuiToolCallView::RunAgents(view) => {
-                view.as_ref(ctx).wants_focus(ctx).then(|| TuiBlockingChild {
-                    action_id,
-                    view: view.clone(),
-                })
-            }
+            TuiToolCallView::RunAgents(view) => view
+                .as_ref(ctx)
+                .wants_focus(ctx)
+                .then(|| TuiBlockingChild { view: view.clone() }),
             // These tool views render inline and never replace the input.
             TuiToolCallView::FileEdits(_) | TuiToolCallView::ShellCommand(_) => None,
         }

@@ -53,6 +53,25 @@ fn assignment_keeps_identities_distinct_within_one_request() {
 }
 
 #[test]
+fn assignment_keeps_glyphs_and_colors_unique_until_exhausted() {
+    // 8 glyph rows × 5 color columns.
+    let palette_len = 40;
+    let color_count = 5;
+    let names: Vec<String> = (0..8).map(|i| format!("agent-{i}")).collect();
+    let indices = assign_agent_identity_indices(&names, palette_len);
+    // All eight agents get distinct glyph rows.
+    let glyphs: HashSet<usize> = indices.iter().map(|index| index / color_count).collect();
+    assert_eq!(glyphs.len(), names.len());
+    // The first five agents also get distinct color columns; the sixth
+    // onward must reuse one of the five colors.
+    let colors: HashSet<usize> = indices[..color_count]
+        .iter()
+        .map(|index| index % color_count)
+        .collect();
+    assert_eq!(colors.len(), color_count);
+}
+
+#[test]
 fn assignment_cycles_deterministically_beyond_palette_exhaustion() {
     let palette_len = 3;
     let names: Vec<String> = (0..palette_len + 2).map(|i| format!("agent-{i}")).collect();

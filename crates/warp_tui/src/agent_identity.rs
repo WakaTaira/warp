@@ -94,9 +94,12 @@ pub(crate) fn stable_hash(name: &str) -> u64 {
     hash
 }
 
-/// Assigns a palette index to each agent name: `stable_hash(name) % len`,
-/// with a first-come linear-probe fallback so identities within one request
-/// stay distinct, cycling deterministically once the palette is exhausted.
+/// Assigns a palette index to each agent name, starting from
+/// `stable_hash(name) % len` and probing forward first-come. The palette is a
+/// glyph × color grid, so the probe prefers a candidate whose glyph and color
+/// are both unused, relaxing one dimension at a time as glyphs or colors run
+/// out, and cycling deterministically by raw hash slot once every index is
+/// taken.
 pub(crate) fn assign_agent_identity_indices(
     names: impl IntoIterator<Item = impl AsRef<str>>,
     palette_len: usize,
@@ -105,24 +108,31 @@ pub(crate) fn assign_agent_identity_indices(
     if palette_len == 0 {
         return assigned;
     }
-    let mut used = vec![false; palette_len];
-    let mut used_count = 0;
+    // The palette lays glyph rows over color columns (color varies fastest);
+    // degenerate palettes smaller than the glyph set collapse to one column.
+    let color_count = (palette_len / AGENT_IDENTITY_GLYPHS.len()).max(1);
+    let glyph_of = |index: usize| index / color_count;
+    let color_of = |index: usize| index % color_count;
+    let mut used_index = vec![false; palette_len];
+    let mut used_glyph = vec![false; palette_len.div_ceil(color_count)];
+    let mut used_color = vec![false; color_count];
     for name in names {
         let base =
             usize::try_from(stable_hash(name.as_ref()) % palette_len as u64).unwrap_or_default();
-        let index = if used_count >= palette_len {
-            // Palette exhausted: cycle deterministically by raw hash slot.
-            base
-        } else {
+        let probe = |unused: &dyn Fn(usize) -> bool| {
             (0..palette_len)
                 .map(|offset| (base + offset) % palette_len)
-                .find(|candidate| !used[*candidate])
-                .unwrap_or(base)
+                .find(|candidate| unused(*candidate))
         };
-        if !used[index] {
-            used[index] = true;
-            used_count += 1;
-        }
+        let index =
+            probe(&|c| !used_index[c] && !used_glyph[glyph_of(c)] && !used_color[color_of(c)])
+                .or_else(|| probe(&|c| !used_index[c] && !used_glyph[glyph_of(c)]))
+                .or_else(|| probe(&|c| !used_index[c] && !used_color[color_of(c)]))
+                .or_else(|| probe(&|c| !used_index[c]))
+                .unwrap_or(base);
+        used_index[index] = true;
+        used_glyph[glyph_of(index)] = true;
+        used_color[color_of(index)] = true;
         assigned.push(index);
     }
     assigned

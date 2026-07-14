@@ -6,8 +6,8 @@ use ai::agent::orchestration_config::{
 };
 use warp::tui_export::{
     register_orchestration_test_singletons, AIActionStatus, AIAgentAction, AIAgentActionId,
-    AIAgentActionType, AuthSecretSelection, BlocklistAIActionModel, RunAgentsAgentRunConfig,
-    RunAgentsExecutionMode, RunAgentsRequest, TaskId,
+    AIAgentActionType, AuthSecretSelection, BlocklistAIActionModel, OptionRow, OptionSnapshot,
+    OptionSourceStatus, RunAgentsAgentRunConfig, RunAgentsExecutionMode, RunAgentsRequest, TaskId,
 };
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, ModelHandle};
@@ -393,13 +393,16 @@ fn acceptance_card_matches_the_design_layout_and_styles() {
         // Distinct header tint over the body tint; footer stays untinted.
         assert_ne!(header_bg, surface_bg);
         assert_eq!(frame.buffer[(0, 0)].bg, header_bg);
-        assert_eq!(frame.buffer[(0, 2)].bg, surface_bg);
+        assert_eq!(frame.buffer[(0, 1)].bg, surface_bg);
         let footer_row = render_card_lines(&mut app, &fixture.card, 80)
             .iter()
             .position(|line| line.contains("Enter to accept"))
             .expect("acceptance footer row") as u16;
         assert_ne!(frame.buffer[(0, footer_row)].bg, header_bg);
         assert_ne!(frame.buffer[(0, footer_row)].bg, surface_bg);
+        // The row above the footer is an untinted margin row.
+        assert_ne!(frame.buffer[(0, footer_row - 1)].bg, header_bg);
+        assert_ne!(frame.buffer[(0, footer_row - 1)].bg, surface_bg);
         // The agent glyph and name share the identity color, with the
         // name bolded; identity colors are set (not default foreground).
         let glyph_cell = &frame.buffer[(3, 3)];
@@ -549,6 +552,51 @@ fn configure_walks_pages_and_esc_returns_to_acceptance() {
             action_status(&app, &fixture),
             Some(AIActionStatus::Blocked)
         ));
+    });
+}
+
+#[test]
+fn scrolling_a_long_option_list_requests_a_card_remeasure() {
+    App::test((), |mut app| async move {
+        let fixture = blocked_card(&mut app, &request("oz", remote("env-1", "warp")));
+        act(&mut app, &fixture.card, TuiRunAgentsCardAction::Configure);
+        let selector = app.read(|app| fixture.card.as_ref(app).selector.clone());
+        // Give the page more rows than the viewport so moving the highlight
+        // eventually scrolls and toggles an overflow marker.
+        selector.update(&mut app, |selector, ctx| {
+            let rows = (0..6)
+                .map(|index| OptionRow {
+                    id: format!("row-{index}"),
+                    label: format!("row-{index}"),
+                    harness: None,
+                    badge: None,
+                    disabled_reason: None,
+                })
+                .collect();
+            selector.refresh_snapshot(
+                OptionSnapshot {
+                    rows,
+                    selected_id: Some("row-0".to_string()),
+                    status: OptionSourceStatus::Ready,
+                    footer: None,
+                },
+                ctx,
+            );
+        });
+        fixture.events.borrow_mut().clear();
+
+        // Scrolling past the viewport reveals the `↑` marker: the card asks
+        // its ancestors to re-measure so the taller card is not clipped.
+        for _ in 0..4 {
+            selector.update(&mut app, |selector, ctx| {
+                selector.handle_action(&TuiOptionSelectorAction::MoveDown, ctx);
+            });
+        }
+        assert!(fixture
+            .events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, TuiRunAgentsCardViewEvent::BlockingStateChanged)));
     });
 }
 

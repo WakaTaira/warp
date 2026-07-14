@@ -1217,7 +1217,6 @@ fn run_agents_action_registers_a_card_that_blocks_only_while_awaiting_confirmati
         });
         let blocker = app.read(|ctx| block.as_ref(ctx).active_blocking_child(ctx));
         let blocker = blocker.expect("the blocked RunAgents card blocks the input");
-        assert_eq!(blocker.action_id, action.id);
         assert_eq!(blocker.view.id(), card.id());
 
         // Reject through the card: the block maps it to manual cancellation
@@ -1259,12 +1258,12 @@ fn only_the_front_of_queue_action_blocks_and_handoff_is_direct() {
 
         // Pending requests behind the front blocker do not affect input
         // visibility.
+        let first_card = run_agents_card_view(&app, &block, &first.id);
         let blocker = app.read(|ctx| block.as_ref(ctx).active_blocking_child(ctx));
-        assert_eq!(blocker.expect("front blocker").action_id, first.id);
+        assert_eq!(blocker.expect("front blocker").view.id(), first_card.id());
 
         // Resolving the front blocker hands off directly to the next queued
         // blocking interaction.
-        let first_card = run_agents_card_view(&app, &block, &first.id);
         app.update(|ctx| {
             ctx.dispatch_typed_action_for_view(
                 first_card.window_id(ctx),
@@ -1272,8 +1271,12 @@ fn only_the_front_of_queue_action_blocks_and_handoff_is_direct() {
                 &TuiRunAgentsCardAction::Reject,
             );
         });
+        let second_card = run_agents_card_view(&app, &block, &second.id);
         let blocker = app.read(|ctx| block.as_ref(ctx).active_blocking_child(ctx));
-        assert_eq!(blocker.expect("handed-off blocker").action_id, second.id);
+        assert_eq!(
+            blocker.expect("handed-off blocker").view.id(),
+            second_card.id()
+        );
     });
 }
 
