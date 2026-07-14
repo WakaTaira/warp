@@ -7,10 +7,10 @@ use warp::tui_export::{
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, EntityId, EntityIdMap};
 use warpui_core::elements::tui::{
-    Modifier, TuiBuffer, TuiBufferExt, TuiConstraint, TuiEvent, TuiEventContext, TuiLayoutContext,
-    TuiPaintContext, TuiRect, TuiSize,
+    Modifier, TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiEvent, TuiEventContext,
+    TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize,
 };
-use warpui_core::{App, TuiView as _, TypedActionView as _, ViewHandle};
+use warpui_core::{App, AppContext, TuiView as _, TypedActionView as _, ViewHandle};
 
 use super::{
     OptionSelectorHeader, SelectorItem, TuiOptionSelector, TuiOptionSelectorAction,
@@ -121,23 +121,37 @@ fn confirm(app: &mut App, selector: &ViewHandle<TuiOptionSelector>) {
     selector.update(app, |selector, ctx| selector.confirm_highlighted(ctx));
 }
 
+/// Lays out the selector's element at `width`, returning it with its area.
+fn laid_out_element(
+    selector: &ViewHandle<TuiOptionSelector>,
+    rendered_views: &mut EntityIdMap<Box<dyn TuiElement>>,
+    width: u16,
+    app: &AppContext,
+) -> (Box<dyn TuiElement>, TuiRect) {
+    let mut element = selector.as_ref(app).render(app);
+    let size = {
+        let mut layout_ctx = TuiLayoutContext { rendered_views };
+        element.layout(
+            TuiConstraint::loose(TuiSize::new(width, u16::MAX)),
+            &mut layout_ctx,
+            app,
+        )
+    };
+    let area = TuiRect::new(0, 0, size.width.max(1), size.height.max(1));
+    (element, area)
+}
+
 /// Renders the selector to a styled cell buffer at `width`.
 fn render_buffer(app: &App, selector: &ViewHandle<TuiOptionSelector>, width: u16) -> TuiBuffer {
     app.read(|app| {
         let mut rendered_views = EntityIdMap::default();
-        let mut layout_ctx = TuiLayoutContext {
-            rendered_views: &mut rendered_views,
-        };
-        let mut element = selector.as_ref(app).render(app);
-        let size = element.layout(
-            TuiConstraint::loose(TuiSize::new(width, u16::MAX)),
-            &mut layout_ctx,
-            app,
-        );
-        let area = TuiRect::new(0, 0, size.width.max(1), size.height.max(1));
+        let (mut element, area) = laid_out_element(selector, &mut rendered_views, width, app);
         let mut buffer = TuiBuffer::empty(area);
         let mut paint_ctx = TuiPaintContext::new(&mut rendered_views);
-        element.render(area, &mut buffer, &mut paint_ctx);
+        {
+            let mut surface = TuiPaintSurface::new(&mut buffer);
+            element.render(TuiScreenPosition::new(0, 0), &mut surface, &mut paint_ctx);
+        }
         buffer
     })
 }
@@ -533,24 +547,26 @@ fn snapshot_refresh_falls_back_to_the_selected_value_when_the_highlight_vanishes
     });
 }
 
-/// Dispatches `event` to the selector's freshly rendered element tree,
-/// returning whether it was handled.
+/// Dispatches `event` to the selector's freshly rendered and painted element
+/// tree, returning whether it was handled.
 fn dispatch(app: &App, selector: &ViewHandle<TuiOptionSelector>, event: &TuiEvent) -> bool {
     app.read(|app| {
         let mut rendered_views = EntityIdMap::default();
-        let mut layout_ctx = TuiLayoutContext {
-            rendered_views: &mut rendered_views,
+        let (mut element, area) = laid_out_element(selector, &mut rendered_views, 60, app);
+        // Paint so the tree retains geometry and the scene supports hit
+        // testing during dispatch.
+        let scene = {
+            let mut buffer = TuiBuffer::empty(area);
+            let mut paint_ctx = TuiPaintContext::new(&mut rendered_views);
+            {
+                let mut surface = TuiPaintSurface::new(&mut buffer);
+                element.render(TuiScreenPosition::new(0, 0), &mut surface, &mut paint_ctx);
+            }
+            Rc::new(paint_ctx.scene.clone())
         };
-        let mut element = selector.as_ref(app).render(app);
-        let size = element.layout(
-            TuiConstraint::loose(TuiSize::new(60, u16::MAX)),
-            &mut layout_ctx,
-            app,
-        );
-        let area = TuiRect::new(0, 0, size.width.max(1), size.height.max(1));
-        let mut event_ctx = TuiEventContext::default();
+        let mut event_ctx = TuiEventContext::new(scene, &mut rendered_views);
         event_ctx.set_origin_view(Some(EntityId::new()));
-        element.dispatch_event(event, area, &mut event_ctx, &mut layout_ctx, app)
+        element.dispatch_event(event, &mut event_ctx, app)
     })
 }
 

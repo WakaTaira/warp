@@ -15,9 +15,9 @@
 use warp::tui_export::{OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus};
 use warp_search_core::inline_menu::InlineMenuSelection;
 use warpui_core::elements::tui::{
-    Modifier, TuiBuffer, TuiConstraint, TuiElement, TuiEvent, TuiEventContext, TuiFlex,
-    TuiHoverable, TuiLayoutContext, TuiPaintContext, TuiParentElement, TuiPresentationContext,
-    TuiRect, TuiRectExt, TuiSize, TuiStyle, TuiText,
+    Modifier, TuiConstraint, TuiElement, TuiEvent, TuiEventContext, TuiFlex, TuiHoverable,
+    TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiParentElement, TuiPresentationContext,
+    TuiScreenPoint, TuiScreenPosition, TuiSize, TuiStyle, TuiText,
 };
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::{AppContext, Entity, TuiView, TypedActionView, ViewContext};
@@ -701,8 +701,21 @@ impl TuiElement for SelectorInputElement {
         self.child.layout(constraint, ctx, app)
     }
 
-    fn render(&self, area: TuiRect, buffer: &mut TuiBuffer, ctx: &mut TuiPaintContext) {
-        self.child.render(area, buffer, ctx);
+    fn render(
+        &mut self,
+        origin: TuiScreenPosition,
+        surface: &mut TuiPaintSurface<'_>,
+        ctx: &mut TuiPaintContext,
+    ) {
+        self.child.render(origin, surface, ctx);
+    }
+
+    fn size(&self) -> Option<TuiSize> {
+        self.child.size()
+    }
+
+    fn origin(&self) -> Option<TuiScreenPoint> {
+        self.child.origin()
     }
 
     fn present(&mut self, ctx: &mut TuiPresentationContext<'_>) {
@@ -712,12 +725,10 @@ impl TuiElement for SelectorInputElement {
     fn dispatch_event(
         &mut self,
         event: &TuiEvent,
-        area: TuiRect,
-        event_ctx: &mut TuiEventContext,
-        ctx: &mut TuiLayoutContext,
+        event_ctx: &mut TuiEventContext<'_>,
         app: &AppContext,
     ) -> bool {
-        if self.child.dispatch_event(event, area, event_ctx, ctx, app) {
+        if self.child.dispatch_event(event, event_ctx, app) {
             return true;
         }
         match event {
@@ -772,7 +783,10 @@ impl TuiElement for SelectorInputElement {
             TuiEvent::ScrollWheel {
                 position, delta, ..
             } => {
-                if !area.contains_point(*position) {
+                let Some((origin, size)) = self.origin().zip(self.size()) else {
+                    return false;
+                };
+                if !event_ctx.hit_test(origin, size, *position) {
                     return false;
                 }
                 let (_, rows) = *delta;
