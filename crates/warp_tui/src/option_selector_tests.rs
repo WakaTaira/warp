@@ -7,15 +7,17 @@ use warp::tui_export::{
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, EntityId, EntityIdMap};
 use warpui_core::elements::tui::{
-    TuiBuffer, TuiBufferExt, TuiConstraint, TuiEvent, TuiEventContext, TuiLayoutContext,
+    Modifier, TuiBuffer, TuiBufferExt, TuiConstraint, TuiEvent, TuiEventContext, TuiLayoutContext,
     TuiPaintContext, TuiRect, TuiSize,
 };
 use warpui_core::{App, TuiView as _, TypedActionView as _, ViewHandle};
 
 use super::{
-    OptionSelectorHeader, TuiOptionSelector, TuiOptionSelectorAction, TuiOptionSelectorEvent,
+    OptionSelectorHeader, SelectorItem, TuiOptionSelector, TuiOptionSelectorAction,
+    TuiOptionSelectorEvent,
 };
 use crate::test_fixtures::TestHostView;
+use crate::tui_builder::TuiUiBuilder;
 
 /// Builds an enabled row with `id` used as the label.
 fn row(id: &str) -> OptionRow {
@@ -119,8 +121,8 @@ fn confirm(app: &mut App, selector: &ViewHandle<TuiOptionSelector>) {
     selector.update(app, |selector, ctx| selector.confirm_highlighted(ctx));
 }
 
-/// Renders the selector to trimmed lines at `width`.
-fn render_lines(app: &App, selector: &ViewHandle<TuiOptionSelector>, width: u16) -> Vec<String> {
+/// Renders the selector to a styled cell buffer at `width`.
+fn render_buffer(app: &App, selector: &ViewHandle<TuiOptionSelector>, width: u16) -> TuiBuffer {
     app.read(|app| {
         let mut rendered_views = EntityIdMap::default();
         let mut layout_ctx = TuiLayoutContext {
@@ -137,18 +139,44 @@ fn render_lines(app: &App, selector: &ViewHandle<TuiOptionSelector>, width: u16)
         let mut paint_ctx = TuiPaintContext::new(&mut rendered_views);
         element.render(area, &mut buffer, &mut paint_ctx);
         buffer
-            .to_lines()
-            .into_iter()
-            .map(|line| line.trim_end().to_owned())
-            .collect()
     })
 }
 
-/// The rendered line containing the `❯` highlight marker.
+/// Renders the selector to trimmed lines at `width`.
+fn render_lines(app: &App, selector: &ViewHandle<TuiOptionSelector>, width: u16) -> Vec<String> {
+    render_buffer(app, selector, width)
+        .to_lines()
+        .into_iter()
+        .map(|line| line.trim_end().to_owned())
+        .collect()
+}
+
+/// The rendered line for the selector's highlighted item.
 fn highlighted_line(app: &App, selector: &ViewHandle<TuiOptionSelector>) -> String {
+    let needle = app.read(|app| {
+        let selector = selector.as_ref(app);
+        let index = selector
+            .selection
+            .selected_index()
+            .expect("a highlighted item");
+        let digit = index - selector.scroll_offset + 1;
+        let label = match selector.items()[index] {
+            SelectorItem::Row(row_index) => selector.snapshot.rows[row_index].label.clone(),
+            SelectorItem::Retry => "↻ Retry".to_string(),
+            SelectorItem::CustomText => selector
+                .custom_text_value
+                .clone()
+                .or_else(|| match &selector.snapshot.footer {
+                    Some(OptionFooter::CustomText { label }) => Some(label.clone()),
+                    Some(OptionFooter::CreateNewAuthSecret) | None => None,
+                })
+                .expect("custom-text footer label"),
+        };
+        format!("({digit}) {label}")
+    });
     render_lines(app, selector, 60)
         .into_iter()
-        .find(|line| line.contains('❯'))
+        .find(|line| line.contains(&needle))
         .expect("a highlighted row")
 }
 
@@ -160,10 +188,28 @@ fn renders_header_position_question_and_initial_highlight() {
         let lines = render_lines(&app, &selector, 60);
         // Header: title, position in the current sequence, and the question.
         assert!(lines[0].contains("Host"));
+        assert!(lines[0].contains("←"));
         assert!(lines[0].contains("4 of 6"));
-        assert!(lines[1].contains("Which host should run the agents?"));
+        assert!(lines[0].contains("→"));
+        assert!(lines[0].ends_with("← 4 of 6 →"));
+        assert!(lines[1].is_empty());
+        assert!(lines[2].contains("Which host should run the agents?"));
         // The highlight starts on the snapshot's current value.
-        assert!(highlighted_line(&app, &selector).contains('b'));
+        let highlighted = highlighted_line(&app, &selector);
+        assert!(highlighted.contains("(2) b"));
+        assert!(!highlighted.contains('❯'));
+
+        let buffer = render_buffer(&app, &selector, 60);
+        let builder = app.read(TuiUiBuilder::from_app);
+        let selected = &buffer[(0, 4)];
+        assert_eq!(
+            selected.fg,
+            builder
+                .orchestration_option_selected_style()
+                .fg
+                .expect("selected option has a foreground")
+        );
+        assert!(selected.modifier.contains(Modifier::BOLD));
     });
 }
 
@@ -213,12 +259,12 @@ fn digits_are_viewport_relative_in_scrolled_lists() {
         let ids: Vec<String> = (0..12).map(|i| format!("row-{i}")).collect();
         let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
         set_page(&mut app, &selector, snapshot(&id_refs, Some("row-0")));
-        // Scroll two rows down; digit 1 now confirms the third row
-        //, and the clipped top renders an overflow marker.
+        // Scroll two rows down; digit 1 now confirms the third row,
+        // and the clipped top renders an overflow marker.
         act(&mut app, &selector, TuiOptionSelectorAction::ScrollBy(2));
         assert!(render_lines(&app, &selector, 60)
             .iter()
-            .any(|line| line.contains("↑ more")));
+            .any(|line| line.trim() == "↑"));
         act(
             &mut app,
             &selector,
@@ -247,7 +293,28 @@ fn navigation_scrolls_to_keep_the_highlight_visible() {
         assert!(highlighted_line(&app, &selector).contains("row-9"));
         assert!(render_lines(&app, &selector, 60)
             .iter()
-            .any(|line| line.contains("↑ more")));
+            .any(|line| line.trim() == "↑"));
+    });
+}
+
+#[test]
+fn list_viewport_shows_four_rows_and_arrow_overflow_markers() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        set_page(
+            &mut app,
+            &selector,
+            snapshot(&["a", "b", "c", "d", "e", "f"], Some("a")),
+        );
+        let lines = render_lines(&app, &selector, 60);
+        assert!(lines.iter().any(|line| line.contains("(4) d")));
+        assert!(!lines.iter().any(|line| line.contains("(5) e")));
+        assert!(lines.iter().any(|line| line.trim() == "↓"));
+
+        act(&mut app, &selector, TuiOptionSelectorAction::ScrollBy(2));
+        let lines = render_lines(&app, &selector, 60);
+        assert!(lines.iter().any(|line| line.trim() == "↑"));
+        assert!(lines.iter().any(|line| line.contains("(1) c")));
     });
 }
 

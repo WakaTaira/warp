@@ -211,16 +211,13 @@ impl TuiUiBuilder {
         TuiStyle::default().fg(cell_color(self.warping_base_fill()))
     }
 
-    /// The magenta-tinted background behind orchestration surfaces (the
-    /// option selector's highlighted row), pre-blended over the probed base
-    /// background (mirroring [`Self::input_background`]'s accent recipe).
-    pub(crate) fn orchestration_surface_background(&self) -> Color {
-        let magenta = ThemeFill::from(self.warp_theme.terminal_colors().normal.magenta);
-        cell_color(
-            self.base_background()
-                .blend(&magenta.with_opacity(10))
-                .blend(&magenta.with_opacity(10)),
-        )
+    /// Bold magenta text for the selected orchestration option.
+    pub(crate) fn orchestration_option_selected_style(&self) -> TuiStyle {
+        TuiStyle::default()
+            .fg(cell_color(ThemeFill::from(
+                self.warp_theme.terminal_colors().normal.magenta,
+            )))
+            .add_modifier(Modifier::BOLD)
     }
 
     /// Collapsible-header style while the pointer hovers it.

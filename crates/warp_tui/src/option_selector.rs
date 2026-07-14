@@ -15,9 +15,9 @@
 use warp::tui_export::{OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus};
 use warp_search_core::inline_menu::InlineMenuSelection;
 use warpui_core::elements::tui::{
-    Modifier, TuiBuffer, TuiConstraint, TuiContainer, TuiElement, TuiEvent, TuiEventContext,
-    TuiFlex, TuiHoverable, TuiLayoutContext, TuiPaintContext, TuiParentElement,
-    TuiPresentationContext, TuiRect, TuiRectExt, TuiSize, TuiStyle, TuiText,
+    Modifier, TuiBuffer, TuiConstraint, TuiElement, TuiEvent, TuiEventContext, TuiFlex,
+    TuiHoverable, TuiLayoutContext, TuiPaintContext, TuiParentElement, TuiPresentationContext,
+    TuiRect, TuiRectExt, TuiSize, TuiStyle, TuiText,
 };
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::{AppContext, Entity, TuiView, TypedActionView, ViewContext};
@@ -26,7 +26,7 @@ use crate::inline_menu::keep_selected_visible;
 use crate::tui_builder::TuiUiBuilder;
 
 /// Maximum option rows visible at once; longer lists scroll.
-pub(crate) const MAX_VISIBLE_OPTION_ROWS: usize = 8;
+pub(crate) const MAX_VISIBLE_OPTION_ROWS: usize = 4;
 
 /// Validation copy shown when the custom-text editor is submitted empty.
 const CUSTOM_TEXT_EMPTY_ERROR: &str = "Enter a value to continue.";
@@ -370,28 +370,46 @@ impl TuiOptionSelector {
     /// One header block: title + position, then the page's question.
     fn render_header(&self, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
         let (current, total) = self.header.position;
-        let title_style = builder.primary_text_style().add_modifier(Modifier::BOLD);
-        let title_row = TuiText::from_spans([
-            (self.header.title.clone(), title_style),
-            (
-                format!("  {current} of {total}"),
-                builder.muted_text_style(),
-            ),
+        let title = TuiText::new(self.header.title.clone())
+            .with_style(builder.primary_text_style())
+            .truncate()
+            .finish();
+        let previous_style = if current > 1 {
+            builder.primary_text_style()
+        } else {
+            builder.muted_text_style()
+        };
+        let next_style = if current < total {
+            builder.primary_text_style()
+        } else {
+            builder.muted_text_style()
+        };
+        let position = TuiText::from_spans([
+            ("←".to_string(), previous_style),
+            (format!(" {current} "), builder.primary_text_style()),
+            (format!("of {total} "), builder.muted_text_style()),
+            ("→".to_string(), next_style),
         ])
         .truncate()
         .finish();
+        let title_row = TuiFlex::row()
+            .child(title)
+            .flex_child(TuiFlex::row().finish())
+            .child(position)
+            .finish();
         TuiFlex::column()
             .child(title_row)
+            .child(TuiText::new(" ").finish())
             .child(
                 TuiText::new(self.header.question.clone())
-                    .with_style(builder.primary_text_style())
+                    .with_style(builder.primary_text_style().add_modifier(Modifier::BOLD))
                     .finish(),
             )
             .finish()
     }
 
     /// One option row: viewport-relative digit, label, badge, and disabled
-    /// reason, highlighted with the orchestration surface tint.
+    /// reason, with the current selection rendered in bold magenta.
     fn render_row(
         &self,
         row: &OptionRow,
@@ -400,29 +418,25 @@ impl TuiOptionSelector {
         builder: &TuiUiBuilder,
     ) -> Box<dyn TuiElement> {
         let disabled = row.disabled_reason.is_some();
-        let mut label_style = if disabled {
+        let label_style = if is_highlighted {
+            builder.orchestration_option_selected_style()
+        } else if disabled {
             builder.dim_text_style()
         } else {
             builder.primary_text_style()
         };
-        let mut detail_style = if disabled {
+        let detail_style = if is_highlighted {
+            builder.orchestration_option_selected_style()
+        } else if disabled {
             builder.dim_text_style()
         } else {
             builder.muted_text_style()
         };
-        if is_highlighted {
-            let highlight_bg = builder.orchestration_surface_background();
-            label_style = label_style.bg(highlight_bg).add_modifier(Modifier::BOLD);
-            detail_style = detail_style.bg(highlight_bg);
-        }
-
-        let marker = if is_highlighted { "❯ " } else { "  " };
         let digit_prefix = match digit {
-            Some(digit) => format!("{digit}. "),
-            None => "   ".to_string(),
+            Some(digit) => format!("({digit}) "),
+            None => "    ".to_string(),
         };
         let mut spans = vec![
-            (marker.to_string(), label_style),
             (digit_prefix, detail_style),
             (row.label.clone(), label_style),
         ];
@@ -450,18 +464,16 @@ impl TuiOptionSelector {
         style: TuiStyle,
         builder: &TuiUiBuilder,
     ) -> Box<dyn TuiElement> {
-        let mut style = style;
-        if is_highlighted {
-            style = style
-                .bg(builder.orchestration_surface_background())
-                .add_modifier(Modifier::BOLD);
-        }
-        let marker = if is_highlighted { "❯ " } else { "  " };
-        let digit_prefix = match digit {
-            Some(digit) => format!("{digit}. "),
-            None => "   ".to_string(),
+        let style = if is_highlighted {
+            builder.orchestration_option_selected_style()
+        } else {
+            style
         };
-        TuiText::from_spans([(format!("{marker}{digit_prefix}{text}"), style)])
+        let digit_prefix = match digit {
+            Some(digit) => format!("({digit}) "),
+            None => "    ".to_string(),
+        };
+        TuiText::from_spans([(format!("{digit_prefix}{text}"), style)])
             .truncate()
             .finish()
     }
@@ -476,7 +488,7 @@ impl TuiOptionSelector {
         let mut column = TuiFlex::column();
         column.add_child(
             TuiText::from_spans([
-                (format!("❯ {label}: "), builder.primary_text_style()),
+                (format!("{label}: "), builder.primary_text_style()),
                 (
                     format!("{}▏", editor.buffer),
                     builder.primary_text_style().add_modifier(Modifier::BOLD),
@@ -506,7 +518,7 @@ impl TuiOptionSelector {
         let visible = self.scroll_offset..visible_end;
         if self.scroll_offset > 0 {
             column.add_child(
-                TuiText::new("↑ more")
+                TuiText::new("↑")
                     .with_style(builder.dim_text_style())
                     .truncate()
                     .finish(),
@@ -561,7 +573,7 @@ impl TuiOptionSelector {
         }
         if visible_end < items.len() {
             column.add_child(
-                TuiText::new("↓ more")
+                TuiText::new("↓")
                     .with_style(builder.dim_text_style())
                     .truncate()
                     .finish(),
@@ -623,11 +635,7 @@ impl TuiView for TuiOptionSelector {
     fn render(&self, app: &AppContext) -> Box<dyn TuiElement> {
         let builder = TuiUiBuilder::from_app(app);
         let content = TuiFlex::column()
-            .child(
-                TuiContainer::new(self.render_header(&builder))
-                    .with_padding_bottom(1)
-                    .finish(),
-            )
+            .child(self.render_header(&builder))
             .child(self.render_list(&builder))
             .finish();
         SelectorInputElement {

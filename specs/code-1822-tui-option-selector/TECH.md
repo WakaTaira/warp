@@ -20,14 +20,15 @@ nothing about orchestration edit state.
 
 A `TuiView` + `TypedActionView` (`TuiOptionSelector`) rendering one page:
 
-- Header (`OptionSelectorHeader`): bold title, a muted one-based "n of m" position in
-  the host's page sequence, and the page's question.
+- Header (`OptionSelectorHeader`): title on the left, right-aligned `← n of m →`
+  navigation state (boundary arrows muted), a blank separator row, and the page's
+  bold question.
 - Option list rendered from an `OptionSnapshot` (`warp::tui_export`): up to
-  `MAX_VISIBLE_OPTION_ROWS` (8) rows visible at once with `↑ more` / `↓ more` overflow
-  markers. Rows show a `❯` highlight marker, a viewport-relative digit prefix (1-9),
-  the label, an optional badge suffix (`(default)` / `(recent)` / `(connected)`), and
-  — for disabled rows — the `disabled_reason`. The highlighted row is tinted with
-  `TuiUiBuilder::orchestration_surface_background`.
+  `MAX_VISIBLE_OPTION_ROWS` (4) rows visible at once with `↑` / `↓` overflow markers.
+  Rows show a viewport-relative `(1)`-style number, the label, an optional badge
+  suffix (`(default)` / `(recent)` / `(connected)`), and — for disabled rows — the
+  `disabled_reason`. The selected row is bold magenta without an extra marker or
+  background.
 - Status rows appended after the list per `OptionSourceStatus`: `Loading…` (dim),
   `Failed { message }` (error style, plus a selectable `↻ Retry` virtual row that
   emits `RetryRequested`), and `Empty { message }` (dim). Status rows are not
@@ -77,12 +78,9 @@ Selection reuses `InlineMenuSelection` and `keep_selected_visible` from
 
 ### `crates/warp_tui/src/tui_builder.rs`
 
-Adds one style recipe the selector renders with:
-`orchestration_surface_background()` — the terminal palette's normal magenta at 2×10%
-opacity pre-blended over the probed base background, mirroring `input_background`'s
-accent recipe. The card slice adds its remaining orchestration recipes (title style,
-selected-value style, identity palette) itself; only the method the selector calls
-lands here, keeping this PR self-contained.
+Adds `orchestration_option_selected_style()`: bold, full-strength magenta text for
+the selected option. The card slice adds its orchestration surface background and
+remaining recipes (title glyph, selected metadata values, identity palette) itself.
 
 ### `crates/warp_tui/src/lib.rs`
 
