@@ -485,6 +485,7 @@ fn reasoning_agent_block_source(
                     .block_list_mut()
                     .mark_rich_content_dirty(view_id);
             }
+            TuiAIBlockEvent::BlockingStateChanged => {}
         });
     });
     {

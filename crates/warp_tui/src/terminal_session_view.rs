@@ -51,6 +51,7 @@ use warpui_core::{
     AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
 };
 
+use crate::agent_block::TuiBlockingChild;
 use crate::alt_screen_view::AltScreenElement;
 use crate::autoupdate::{TuiAutoupdater, TuiAutoupdaterEvent};
 use crate::clipboard::copy_to_clipboard;
@@ -251,6 +252,10 @@ pub(crate) struct TuiTerminalSessionView {
     /// can edge-detect enter/exit transitions and move focus (off the input
     /// editor and back) once per transition instead of on every wakeup.
     alt_screen_focus_active: bool,
+    /// The view id of the blocker currently holding focus, tracked only to
+    /// detect blocker transitions in [`Self::sync_blocker_focus`]. Input
+    /// visibility itself is derived at render time, never stored.
+    active_blocker_view_id: Option<EntityId>,
 }
 
 /// Registers the session surface's keybindings. Called once at TUI startup
@@ -577,6 +582,12 @@ impl TuiTerminalSessionView {
                 ctx,
             )
         });
+        // Input visibility and focus derive from the front-of-queue blocker;
+        // re-derive on every action-queue transition (queued, blocked,
+        // finished). No suppression flag is stored.
+        ctx.subscribe_to_model(&action_model, |view, _, _, ctx| {
+            view.sync_blocker_focus(ctx);
+        });
         let input_editor_model =
             ctx.add_model(|ctx| CodeEditorModel::new_tui(INITIAL_INPUT_WIDTH, ctx));
         let suggestions_mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
@@ -712,6 +723,9 @@ impl TuiTerminalSessionView {
                     view.show_transient_hint(COPY_FAILED_HINT.to_owned(), ctx);
                 }
             },
+            TuiTranscriptViewEvent::BlockingStateChanged => {
+                view.sync_blocker_focus(ctx);
+            }
         });
 
         ctx.subscribe_to_view(&input_view, |view, _, event, ctx| match event {
@@ -905,11 +919,14 @@ impl TuiTerminalSessionView {
                 // which forwards them to the PTY. (ctrl-c is the one bound key
                 // that still reaches the keymap; `handle_interrupt` forwards it
                 // to the app while alt-screen is active.) Restore input focus on
-                // exit.
+                // exit. If a blocker became active behind the alt-screen,
+                // restore that blocker instead of the hidden input.
                 if alt_screen_active != view.alt_screen_focus_active {
                     view.alt_screen_focus_active = alt_screen_active;
                     if alt_screen_active {
                         ctx.focus_self();
+                    } else if let Some(blocker) = view.active_blocking_child(ctx) {
+                        ctx.focus(&blocker.view);
                     } else {
                         ctx.focus(&view.input_view);
                     }
@@ -956,7 +973,37 @@ impl TuiTerminalSessionView {
             next_restore_request_id: 0,
             exit_summary,
             alt_screen_focus_active: false,
+            active_blocker_view_id: None,
         }
+    }
+
+    /// The active front-of-queue blocking interaction, if any (PRODUCT 1, 4).
+    fn active_blocking_child(&self, ctx: &AppContext) -> Option<TuiBlockingChild> {
+        self.transcript.as_ref(ctx).active_blocking_child(ctx)
+    }
+
+    /// Reconciles focus with the derived blocker: a newly active blocker is
+    /// focused (handing off directly between consecutive blockers with no
+    /// intermediate editable input, PRODUCT 6), and focus returns to the
+    /// input when the last blocker resolves (PRODUCT 5). Nothing here writes
+    /// to the input model, so its draft/cursor/selection are untouched
+    /// (PRODUCT 3).
+    fn sync_blocker_focus(&mut self, ctx: &mut ViewContext<Self>) {
+        let blocker = self.active_blocking_child(ctx);
+        let blocker_view_id = blocker.as_ref().map(|child| child.view.id());
+        if blocker_view_id != self.active_blocker_view_id {
+            // The alt-screen owns the whole rendered pane and keyboard. Track
+            // blocker changes while it is active, but defer focus handoff
+            // until the alt-screen exits.
+            if !self.alt_screen_focus_active {
+                match &blocker {
+                    Some(child) => ctx.focus(&child.view),
+                    None => ctx.focus(&self.input_view),
+                }
+            }
+            self.active_blocker_view_id = blocker_view_id;
+        }
+        ctx.notify();
     }
 
     /// Restores an Oz conversation into the TUI's sole conversation surface.
@@ -2215,18 +2262,28 @@ impl TuiView for TuiTerminalSessionView {
                 }
             }
         }
-        if let Some(menu) = inline_menu {
-            content = content.child(
-                TuiConstrainedBox::new(menu)
-                    .with_max_rows(MAX_INLINE_MENU_ROWS)
+        // While a `RunAgents` card (or another blocking interaction) is the
+        // active front-of-queue blocker, the input box, inline menus, and
+        // normal footer are omitted; the blocker renders its own action
+        // hints in their place (PRODUCT 1-2). Visibility is derived fresh
+        // each pass — no stored suppression flag — and the hidden input
+        // model is never written to, so its draft/cursor/selection/scroll
+        // survive untouched (PRODUCT 3).
+        let blocker_active = self.active_blocking_child(ctx).is_some();
+        if !blocker_active {
+            if let Some(menu) = inline_menu {
+                content = content.child(
+                    TuiConstrainedBox::new(menu)
+                        .with_max_rows(MAX_INLINE_MENU_ROWS)
+                        .finish(),
+                );
+            }
+            content = content.child(input_box.finish()).child(
+                TuiConstrainedBox::new(self.render_footer(ctx).finish())
+                    .with_max_rows(1)
                     .finish(),
             );
         }
-        content = content.child(input_box.finish()).child(
-            TuiConstrainedBox::new(self.render_footer(ctx).finish())
-                .with_max_rows(1)
-                .finish(),
-        );
 
         // The size wrapper sits inside the horizontal padding so the PTY's
         // columns match the width block content actually renders at (the GUI

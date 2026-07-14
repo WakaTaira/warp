@@ -1,0 +1,73 @@
+use std::collections::HashSet;
+
+use warp::tui_export::{dark_theme, light_theme};
+use warp_core::ui::theme::WarpTheme;
+
+use super::{agent_identity_palette, assign_agent_identity_indices, stable_hash};
+
+fn palette_len(theme: &WarpTheme) -> usize {
+    agent_identity_palette(theme.terminal_colors(), theme.background().into_solid()).len()
+}
+
+#[test]
+fn palette_offers_at_least_32_combinations_in_dark_and_light_themes() {
+    assert!(palette_len(&dark_theme()) >= 32);
+    assert!(palette_len(&light_theme()) >= 32);
+}
+
+#[test]
+fn palette_entries_are_distinct_glyph_color_pairs() {
+    let theme = dark_theme();
+    let palette = agent_identity_palette(theme.terminal_colors(), theme.background().into_solid());
+    let unique: HashSet<String> = palette
+        .iter()
+        .map(|identity| format!("{}-{:?}", identity.glyph, identity.style.fg))
+        .collect();
+    assert_eq!(unique.len(), palette.len());
+}
+
+#[test]
+fn stable_hash_is_deterministic_and_name_sensitive() {
+    assert_eq!(stable_hash("researcher"), stable_hash("researcher"));
+    assert_ne!(stable_hash("researcher"), stable_hash("reviewer"));
+}
+
+#[test]
+fn assignment_is_deterministic_across_calls() {
+    let names = ["alpha", "beta", "gamma", "delta"];
+    assert_eq!(
+        assign_agent_identity_indices(names, 40),
+        assign_agent_identity_indices(names, 40),
+    );
+}
+
+#[test]
+fn assignment_keeps_identities_distinct_within_one_request() {
+    // Two names that collide on a length-4 palette still get distinct slots
+    // via the first-come probe fallback.
+    let palette_len = 4;
+    let names: Vec<String> = (0..palette_len).map(|i| format!("agent-{i}")).collect();
+    let indices = assign_agent_identity_indices(&names, palette_len);
+    let unique: HashSet<usize> = indices.iter().copied().collect();
+    assert_eq!(unique.len(), palette_len);
+}
+
+#[test]
+fn assignment_cycles_deterministically_beyond_palette_exhaustion() {
+    let palette_len = 3;
+    let names: Vec<String> = (0..palette_len + 2).map(|i| format!("agent-{i}")).collect();
+    let indices = assign_agent_identity_indices(&names, palette_len);
+    assert_eq!(indices.len(), palette_len + 2);
+    // The first `palette_len` assignments cover every slot; overflow entries
+    // reuse slots by raw hash without panicking or omitting agents.
+    let first: HashSet<usize> = indices[..palette_len].iter().copied().collect();
+    assert_eq!(first.len(), palette_len);
+    for index in &indices[palette_len..] {
+        assert!(*index < palette_len);
+    }
+}
+
+#[test]
+fn assignment_handles_an_empty_palette() {
+    assert!(assign_agent_identity_indices(["alpha"], 0).is_empty());
+}

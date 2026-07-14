@@ -1,0 +1,1022 @@
+//! [`TuiRunAgentsCardView`]: the TUI permission and configuration card for a
+//! `RunAgents` request (PRODUCT 9-28).
+//!
+//! The card has two interactive modes: an acceptance card summarizing the
+//! request and its run-wide configuration, and a configuring mode that walks
+//! a dynamic sequence of single-field pages rendered by
+//! [`TuiOptionSelector`]. Accept dispatches the edited request through the
+//! shared [`BlocklistAIActionModel::execute_run_agents`] path; Reject emits
+//! [`TuiRunAgentsCardViewEvent::RejectRequested`], which the owning
+//! [`crate::agent_block::TuiAIBlock`] maps to action cancellation. Terminal,
+//! spawning, streaming, and restored states reuse the existing fallback
+//! tool-call presentation and its `tool_call_labels` copy.
+
+use warp::tui_export::{
+    accept_disabled_reason_with_auth, api_key_snapshot, empty_env_recommendation_message,
+    environment_snapshot, harness_snapshot, host_snapshot, location_snapshot, model_snapshot,
+    persist_environment_selection, persist_host_selection,
+    resolve_auth_secret_selection_for_harness, resolve_default_environment_id,
+    resolve_default_host_slug, should_show_auth_secret_picker, AIActionStatus, AIAgentAction,
+    AIAgentActionId, AIAgentActionType, AuthSecretSelection, BlocklistAIActionEvent,
+    BlocklistAIActionModel, Harness, HarnessAvailabilityEvent, HarnessAvailabilityModel,
+    LLMPreferences, LLMPreferencesEvent, OptionSnapshot, OrchestrationConfig,
+    OrchestrationConfigState, OrchestrationConfigStatus, OrchestrationEditState,
+    RunAgentsExecutionMode, RunAgentsExecutor, RunAgentsExecutorEvent, RunAgentsRequest,
+    RunAgentsSpawningSnapshot, ORCHESTRATION_WARP_WORKER_HOST,
+};
+use warpui::SingletonEntity;
+use warpui_core::elements::tui::{
+    Modifier, TuiChildView, TuiContainer, TuiElement, TuiFlex, TuiParentElement, TuiText,
+};
+use warpui_core::keymap::macros::*;
+use warpui_core::keymap::{self, FixedBinding};
+use warpui_core::{
+    AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
+};
+
+use crate::agent_block_sections::render_fallback_tool_call_section;
+use crate::agent_identity::{assign_agent_identity_indices, AgentIdentity};
+use crate::keybindings::TUI_BINDING_GROUP;
+use crate::option_selector::{OptionSelectorHeader, TuiOptionSelector, TuiOptionSelectorEvent};
+use crate::tui_builder::TuiUiBuilder;
+
+const RUN_AGENTS_CARD_TITLE: &str = "Can I start additional agents for this task?";
+
+/// Keymap-context flag set while the acceptance card is active.
+const ACCEPTANCE_CONTEXT_FLAG: &str = "TuiRunAgentsCardAcceptance";
+/// Keymap-context flag set while a configuration page is active.
+const CONFIGURING_CONTEXT_FLAG: &str = "TuiRunAgentsCardConfiguring";
+
+/// Row ids emitted by `location_snapshot`.
+const LOCATION_CLOUD_ID: &str = "cloud";
+
+/// Registers the card's keybindings (PRODUCT 16, 26-28). Called once at TUI
+/// startup from `keybindings::init`. All bindings are fixed and scoped to
+/// the card's keymap context, so they only fire while a card is focused.
+pub(crate) fn init(app: &mut AppContext) {
+    let acceptance = || id!(TuiRunAgentsCardView::ui_name()) & id!(ACCEPTANCE_CONTEXT_FLAG);
+    let configuring = || id!(TuiRunAgentsCardView::ui_name()) & id!(CONFIGURING_CONTEXT_FLAG);
+    app.register_fixed_bindings([
+        FixedBinding::new("enter", TuiRunAgentsCardAction::Accept, acceptance())
+            .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new("numpadenter", TuiRunAgentsCardAction::Accept, acceptance())
+            .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new("ctrl-e", TuiRunAgentsCardAction::Configure, acceptance())
+            .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new(
+            "enter",
+            TuiRunAgentsCardAction::ConfirmSelection,
+            configuring(),
+        )
+        .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new(
+            "numpadenter",
+            TuiRunAgentsCardAction::ConfirmSelection,
+            configuring(),
+        )
+        .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new("escape", TuiRunAgentsCardAction::Back, configuring())
+            .with_group(TUI_BINDING_GROUP),
+        FixedBinding::new(
+            "ctrl-c",
+            TuiRunAgentsCardAction::Reject,
+            id!(TuiRunAgentsCardView::ui_name()),
+        )
+        .with_group(TUI_BINDING_GROUP),
+    ]);
+}
+
+/// Builds the dispatched request from the card fields and the edited
+/// run-wide state, exactly as the GUI's `RunAgentsEditState::to_request`
+/// does (auth via `auth_secret_name()`, `computer_use_enabled` preserved
+/// through the cloned execution mode).
+fn build_request(fields: &RunAgentsRequest, state: &OrchestrationConfigState) -> RunAgentsRequest {
+    RunAgentsRequest {
+        summary: fields.summary.clone(),
+        base_prompt: fields.base_prompt.clone(),
+        skills: fields.skills.clone(),
+        model_id: state.model_id.clone(),
+        harness_type: state.harness_type.clone(),
+        execution_mode: state.execution_mode.clone(),
+        agent_run_configs: fields.agent_run_configs.clone(),
+        plan_id: fields.plan_id.clone(),
+        harness_auth_secret_name: state.auth_secret_name().map(str::to_string),
+    }
+}
+
+/// One single-field configuration page (PRODUCT 18-19).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfigPage {
+    Location,
+    Harness,
+    ApiKey,
+    Host,
+    Environment,
+    Model,
+}
+
+impl ConfigPage {
+    /// The page's header title.
+    fn title(self) -> &'static str {
+        match self {
+            Self::Location => "Location",
+            Self::Harness => "Harness",
+            Self::ApiKey => "API key",
+            Self::Host => "Host",
+            Self::Environment => "Environment",
+            Self::Model => "Model",
+        }
+    }
+
+    /// The page's single question (PRODUCT 18).
+    fn question(self) -> &'static str {
+        match self {
+            Self::Location => "Where should the agents run?",
+            Self::Harness => "Which harness should run the agents?",
+            Self::ApiKey => "Which API key should the agents use?",
+            Self::Host => "Which host should run the agents?",
+            Self::Environment => "Which environment should the agents use?",
+            Self::Model => "Which model should the agents use?",
+        }
+    }
+}
+
+/// Whether the card shows the acceptance summary or a configuration page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CardMode {
+    Acceptance,
+    Configuring { page: ConfigPage },
+}
+
+/// Events emitted to the owning agent block.
+#[derive(Clone, Debug)]
+pub(crate) enum TuiRunAgentsCardViewEvent {
+    /// The user rejected the request; the block cancels the action.
+    RejectRequested,
+    /// The card's blocking/focus state may have changed; ancestors re-derive
+    /// the active blocker and re-measure the card.
+    BlockingStateChanged,
+}
+
+/// Typed actions bound to the card's keybindings.
+#[derive(Clone, Debug)]
+pub(crate) enum TuiRunAgentsCardAction {
+    Accept,
+    Configure,
+    ConfirmSelection,
+    Back,
+    Reject,
+}
+
+/// The TUI `RunAgents` confirmation card view. See the module docs.
+pub(crate) struct TuiRunAgentsCardView {
+    action_id: AIAgentActionId,
+    /// The latest streamed tool call, kept in sync by
+    /// [`Self::update_request`]; terminal/streaming states render from it
+    /// through the shared fallback tool-call presentation.
+    action: AIAgentAction,
+    orchestration_edit_state: OrchestrationEditState,
+    /// Card fields carried through editing into the dispatched request.
+    request_fields: RunAgentsRequest,
+    mode: CardMode,
+    selector: ViewHandle<TuiOptionSelector>,
+    action_model: ModelHandle<BlocklistAIActionModel>,
+    /// Approved/disapproved plan config used to resolve inherited fields.
+    active_config: Option<(OrchestrationConfig, OrchestrationConfigStatus)>,
+    /// The conversation's base model, used as the Oz model fallback.
+    fallback_base_model_id: Option<String>,
+    /// Whether the block was restored from history (non-interactive).
+    is_restored: bool,
+    spawning: Option<RunAgentsSpawningSnapshot>,
+    /// Set once the request is accepted or rejected (PRODUCT 8).
+    decided: bool,
+    /// Validation reason shown inline after a blocked Accept (PRODUCT 53).
+    accept_error: Option<String>,
+    /// Identity palette pinned at construction so identities stay stable
+    /// across re-renders, edits, and theme switches (PRODUCT 11).
+    identity_palette: Vec<AgentIdentity>,
+}
+
+impl TuiRunAgentsCardView {
+    /// Creates a card for one pending `RunAgents` action and wires its model
+    /// subscriptions.
+    pub(crate) fn new(
+        action: AIAgentAction,
+        request: &RunAgentsRequest,
+        active_config: Option<(OrchestrationConfig, OrchestrationConfigStatus)>,
+        action_model: ModelHandle<BlocklistAIActionModel>,
+        run_agents_executor: ModelHandle<RunAgentsExecutor>,
+        fallback_base_model_id: Option<String>,
+        is_restored: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> Self {
+        let selector = ctx.add_typed_action_tui_view(|_| TuiOptionSelector::new());
+        ctx.subscribe_to_view(&selector, |me, _, event, ctx| {
+            me.handle_selector_event(event, ctx);
+        });
+
+        let action_id = action.id.clone();
+        let action_id_for_executor = action_id.clone();
+        ctx.subscribe_to_model(&run_agents_executor, move |me, _, event, ctx| match event {
+            RunAgentsExecutorEvent::SpawningStarted {
+                action_id,
+                snapshot,
+            } if action_id == &action_id_for_executor => {
+                me.spawning = Some(*snapshot);
+                me.mode = CardMode::Acceptance;
+                ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+                ctx.notify();
+            }
+            RunAgentsExecutorEvent::SpawningFinished { action_id }
+                if action_id == &action_id_for_executor =>
+            {
+                me.spawning = None;
+                ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+                ctx.notify();
+            }
+            RunAgentsExecutorEvent::SpawningStarted { .. }
+            | RunAgentsExecutorEvent::SpawningFinished { .. } => {}
+        });
+
+        let action_id_for_actions = action_id.clone();
+        ctx.subscribe_to_model(&action_model, move |me, _, event, ctx| match event {
+            BlocklistAIActionEvent::FinishedAction { action_id, .. }
+                if action_id == &action_id_for_actions =>
+            {
+                me.mode = CardMode::Acceptance;
+                ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+                ctx.notify();
+            }
+            BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(action_id)
+                if action_id == &action_id_for_actions =>
+            {
+                // Streaming completed: the card transitions from the
+                // "Configuring agents…" placeholder to the interactive
+                // acceptance card, so resolve display defaults now.
+                me.resolve_interactive_defaults(ctx);
+                ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+                ctx.notify();
+            }
+            _ => {}
+        });
+
+        // Live catalog changes revalidate the edit state and refresh the
+        // active page (PRODUCT 45, 49-50).
+        ctx.subscribe_to_model(
+            &HarnessAvailabilityModel::handle(ctx),
+            |me, _, event, ctx| match event {
+                HarnessAvailabilityEvent::Changed
+                | HarnessAvailabilityEvent::AuthSecretsLoaded
+                | HarnessAvailabilityEvent::AuthSecretsFetchFailed
+                | HarnessAvailabilityEvent::AuthSecretCreated { .. }
+                | HarnessAvailabilityEvent::AuthSecretDeleted { .. } => {
+                    me.orchestration_edit_state
+                        .orchestration_config_state
+                        .revalidate_after_catalog_change(ctx);
+                    me.refresh_active_page(ctx);
+                    ctx.notify();
+                }
+                HarnessAvailabilityEvent::AuthSecretCreationFailed { .. }
+                | HarnessAvailabilityEvent::AuthSecretDeletionFailed { .. } => {}
+            },
+        );
+        ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |me, _, event, ctx| {
+            if let LLMPreferencesEvent::UpdatedAvailableLLMs = event {
+                me.orchestration_edit_state
+                    .orchestration_config_state
+                    .revalidate_after_catalog_change(ctx);
+                me.refresh_active_page(ctx);
+                ctx.notify();
+            }
+        });
+        ctx.subscribe_to_model(
+            &warp::tui_export::ConnectedSelfHostedWorkersModel::handle(ctx),
+            |me, _, event, ctx| {
+                let warp::tui_export::ConnectedSelfHostedWorkersEvent::Changed = event;
+                me.refresh_active_page(ctx);
+                ctx.notify();
+            },
+        );
+
+        let mut view = Self {
+            action_id,
+            action,
+            orchestration_edit_state: OrchestrationEditState::new(Self::config_state_from_request(
+                request,
+                active_config.as_ref(),
+            )),
+            request_fields: request.clone(),
+            mode: CardMode::Acceptance,
+            selector,
+            action_model,
+            active_config,
+            fallback_base_model_id,
+            is_restored,
+            spawning: None,
+            decided: false,
+            accept_error: None,
+            identity_palette: TuiUiBuilder::from_app(ctx).agent_identity_palette(),
+        };
+        view.resolve_interactive_defaults(ctx);
+        view
+    }
+
+    /// Seeds the run-wide edit state from the streamed request, resolving
+    /// empty fields from an approved plan config (state parity with the
+    /// GUI card's `RunAgentsEditState::from_request` + `resolve_from_config`).
+    fn config_state_from_request(
+        request: &RunAgentsRequest,
+        active_config: Option<&(OrchestrationConfig, OrchestrationConfigStatus)>,
+    ) -> OrchestrationConfigState {
+        let mut state = OrchestrationConfigState::from_run_agents_fields(
+            Some(&request.model_id),
+            Some(&request.harness_type),
+            &request.execution_mode,
+        );
+        // Carry the request's auth secret across the round trip. Absence
+        // becomes `Unset`; defaults re-resolve from persisted settings.
+        state.auth_secret_selection =
+            AuthSecretSelection::from_optional_name(request.harness_auth_secret_name.clone());
+        if matches!(request.execution_mode, RunAgentsExecutionMode::Local) {
+            // Re-applying Local sanitizes product-disabled local harnesses.
+            state.toggle_execution_mode_to_remote(false);
+        }
+        if let Some((config, status)) = active_config {
+            if status.is_approved() {
+                state.resolve_from_config(config);
+            }
+        }
+        state
+    }
+
+    /// Resolves UI-only display defaults, mirroring the GUI card's
+    /// `resolve_interactive_defaults`: the Oz model falls back to the
+    /// conversation base model, a Remote run pre-fills the default host and
+    /// environment, and an `Unset` auth selection re-seeds from persisted
+    /// per-harness settings.
+    fn resolve_interactive_defaults(&mut self, ctx: &AppContext) {
+        let state = &mut self.orchestration_edit_state.orchestration_config_state;
+        if state.model_id.is_empty() {
+            let harness = Harness::parse_orchestration_harness(&state.harness_type);
+            if matches!(harness, Some(Harness::Oz) | None) {
+                if let Some(base) = &self.fallback_base_model_id {
+                    state.model_id = base.clone();
+                }
+            }
+        }
+        if let RunAgentsExecutionMode::Remote {
+            environment_id,
+            worker_host,
+            ..
+        } = &state.execution_mode
+        {
+            let needs_host = worker_host.is_empty();
+            let needs_env = environment_id.is_empty();
+            if needs_host {
+                let default_host = resolve_default_host_slug(ctx)
+                    .unwrap_or_else(|| ORCHESTRATION_WARP_WORKER_HOST.to_string());
+                state.set_worker_host(default_host);
+            }
+            if needs_env {
+                if let Some(default_env) = resolve_default_environment_id(ctx) {
+                    state.set_environment_id(default_env);
+                }
+            }
+        }
+        if matches!(state.auth_secret_selection, AuthSecretSelection::Unset) {
+            state.auth_secret_selection =
+                resolve_auth_secret_selection_for_harness(&state.harness_type, ctx);
+        }
+    }
+
+    /// Re-syncs edit state from the latest streaming request chunk
+    /// (mirroring the GUI card's `update_request`).
+    pub(crate) fn update_request(
+        &mut self,
+        request: &RunAgentsRequest,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.spawning.is_some() || self.decided {
+            return;
+        }
+        self.action.action = AIAgentActionType::RunAgents(request.clone());
+        let new_state = Self::config_state_from_request(request, self.active_config.as_ref());
+        let changed = self.request_fields != *request
+            || self.orchestration_edit_state.orchestration_config_state != new_state;
+        if !changed {
+            return;
+        }
+        self.request_fields = request.clone();
+        self.orchestration_edit_state = OrchestrationEditState::new(new_state);
+        self.resolve_interactive_defaults(ctx);
+        self.refresh_active_page(ctx);
+        ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+        ctx.notify();
+    }
+
+    /// Whether this card is the active blocking interaction: interactive in
+    /// Acceptance/Configuring while the action awaits confirmation, and
+    /// false once accepted, rejected, spawning, finished, or restored
+    /// (PRODUCT 1-8).
+    pub(crate) fn wants_focus(&self, ctx: &AppContext) -> bool {
+        if self.decided || self.spawning.is_some() || self.is_restored {
+            return false;
+        }
+        matches!(
+            self.action_model
+                .as_ref(ctx)
+                .get_action_status(&self.action_id),
+            Some(AIActionStatus::Blocked)
+        )
+    }
+
+    /// The dynamic page sequence for the current edit state (PRODUCT 19-21).
+    fn page_sequence(state: &OrchestrationConfigState) -> Vec<ConfigPage> {
+        if state.execution_mode.is_remote() {
+            let mut pages = vec![ConfigPage::Location, ConfigPage::Harness];
+            if should_show_auth_secret_picker(state) {
+                pages.push(ConfigPage::ApiKey);
+            }
+            pages.extend([ConfigPage::Host, ConfigPage::Environment, ConfigPage::Model]);
+            pages
+        } else {
+            vec![ConfigPage::Location, ConfigPage::Model]
+        }
+    }
+
+    /// Builds the option snapshot for `page` from the shared builders.
+    fn snapshot_for_page(&self, page: ConfigPage, ctx: &AppContext) -> OptionSnapshot {
+        let state = &self.orchestration_edit_state.orchestration_config_state;
+        match page {
+            ConfigPage::Location => location_snapshot(state, ctx),
+            ConfigPage::Harness => harness_snapshot(state, ctx),
+            ConfigPage::ApiKey => api_key_snapshot(state, ctx),
+            ConfigPage::Host => host_snapshot(state, ctx),
+            ConfigPage::Environment => environment_snapshot(state, ctx),
+            ConfigPage::Model => model_snapshot(state, ctx),
+        }
+    }
+
+    /// Opens `page`: swaps the selector to its snapshot and header, and
+    /// lazily fetches auth secrets for the API-key page (the same lazy fetch
+    /// the GUI triggers on picker population).
+    fn open_page(&mut self, page: ConfigPage, ctx: &mut ViewContext<Self>) {
+        self.mode = CardMode::Configuring { page };
+        self.accept_error = None;
+        if matches!(page, ConfigPage::ApiKey) {
+            self.ensure_auth_secrets_fetched(ctx);
+        }
+        let sequence =
+            Self::page_sequence(&self.orchestration_edit_state.orchestration_config_state);
+        let position = sequence.iter().position(|p| *p == page).unwrap_or(0) + 1;
+        let header = OptionSelectorHeader {
+            title: page.title().to_string(),
+            position: (position, sequence.len()),
+            question: page.question().to_string(),
+        };
+        let snapshot = self.snapshot_for_page(page, ctx);
+        self.selector.update(ctx, |selector, ctx| {
+            selector.set_page(header, snapshot, ctx);
+        });
+        ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+        ctx.notify();
+    }
+
+    /// Refreshes the active page's snapshot in place after a catalog or
+    /// state change, updating the header so the dynamic page count stays
+    /// current (PRODUCT 20).
+    fn refresh_active_page(&mut self, ctx: &mut ViewContext<Self>) {
+        let CardMode::Configuring { page } = self.mode else {
+            return;
+        };
+        let sequence =
+            Self::page_sequence(&self.orchestration_edit_state.orchestration_config_state);
+        if !sequence.contains(&page) {
+            // The active page no longer applies (e.g. auth page removed by a
+            // catalog change); fall back to the acceptance card.
+            self.mode = CardMode::Acceptance;
+            ctx.notify();
+            return;
+        }
+        let snapshot = self.snapshot_for_page(page, ctx);
+        self.selector.update(ctx, |selector, ctx| {
+            selector.refresh_snapshot(snapshot, ctx);
+        });
+    }
+
+    /// Triggers the lazy per-harness auth-secret fetch (also the Retry path
+    /// for a `Failed` API-key page, PRODUCT 48).
+    fn ensure_auth_secrets_fetched(&self, ctx: &mut ViewContext<Self>) {
+        let Some(harness) = Harness::parse_orchestration_harness(
+            &self
+                .orchestration_edit_state
+                .orchestration_config_state
+                .harness_type,
+        ) else {
+            return;
+        };
+        HarnessAvailabilityModel::handle(ctx).update(ctx, |availability, ctx| {
+            availability.ensure_auth_secrets_fetched(harness, ctx);
+        });
+    }
+
+    /// Applies a confirmed selection to the edit state (PRODUCT 24) and
+    /// advances to the next applicable page (PRODUCT 25-26).
+    fn handle_page_confirmed(&mut self, id: &str, ctx: &mut ViewContext<Self>) {
+        let CardMode::Configuring { page } = self.mode else {
+            return;
+        };
+        match page {
+            ConfigPage::Location => {
+                let is_remote = id == LOCATION_CLOUD_ID;
+                self.orchestration_edit_state
+                    .orchestration_config_state
+                    .apply_execution_mode_change(
+                        is_remote,
+                        self.fallback_base_model_id.clone(),
+                        ctx,
+                    );
+            }
+            ConfigPage::Harness => {
+                let fallback = self.fallback_base_model_id.clone();
+                self.orchestration_edit_state
+                    .apply_harness_change(id, fallback, ctx);
+            }
+            ConfigPage::ApiKey => {
+                let name = (!id.is_empty()).then(|| id.to_string());
+                self.orchestration_edit_state
+                    .orchestration_config_state
+                    .apply_auth_secret_change(name, ctx);
+            }
+            ConfigPage::Host => {
+                self.orchestration_edit_state
+                    .orchestration_config_state
+                    .set_worker_host(id.to_string());
+                persist_host_selection(id, ctx);
+            }
+            ConfigPage::Environment => {
+                self.orchestration_edit_state
+                    .orchestration_config_state
+                    .set_environment_id(id.to_string());
+                persist_environment_selection(id, ctx);
+            }
+            ConfigPage::Model => {
+                self.orchestration_edit_state
+                    .orchestration_config_state
+                    .model_id = id.to_string();
+            }
+        }
+        self.advance_after(page, ctx);
+    }
+
+    /// Advances past `page` in the (freshly recomputed) sequence, returning
+    /// to the acceptance card after the final page (PRODUCT 25-26).
+    fn advance_after(&mut self, page: ConfigPage, ctx: &mut ViewContext<Self>) {
+        let sequence =
+            Self::page_sequence(&self.orchestration_edit_state.orchestration_config_state);
+        let next = sequence
+            .iter()
+            .position(|p| *p == page)
+            .and_then(|index| sequence.get(index + 1))
+            .copied();
+        match next {
+            Some(next) => self.open_page(next, ctx),
+            None => {
+                self.mode = CardMode::Acceptance;
+                ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+                ctx.notify();
+            }
+        }
+    }
+
+    /// Routes selector events for the active page.
+    fn handle_selector_event(
+        &mut self,
+        event: &TuiOptionSelectorEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match event {
+            TuiOptionSelectorEvent::Confirmed { id } => {
+                let id = id.clone();
+                self.handle_page_confirmed(&id, ctx);
+            }
+            TuiOptionSelectorEvent::CustomTextSubmitted { value } => {
+                if let CardMode::Configuring {
+                    page: ConfigPage::Host,
+                } = self.mode
+                {
+                    self.orchestration_edit_state
+                        .orchestration_config_state
+                        .set_worker_host(value.clone());
+                    persist_host_selection(value, ctx);
+                    self.advance_after(ConfigPage::Host, ctx);
+                }
+            }
+            TuiOptionSelectorEvent::RetryRequested => {
+                self.ensure_auth_secrets_fetched(ctx);
+                self.refresh_active_page(ctx);
+            }
+            TuiOptionSelectorEvent::Dismissed => self.handle_back(ctx),
+        }
+    }
+
+    /// Builds the dispatched request from this card's fields and edited
+    /// run-wide state; see [`build_request`].
+    fn to_request(&self) -> RunAgentsRequest {
+        build_request(
+            &self.request_fields,
+            &self.orchestration_edit_state.orchestration_config_state,
+        )
+    }
+
+    /// Accept (PRODUCT 52-55): validates with the shared gate; a blocked
+    /// accept renders the reason inline and stays active, a valid one
+    /// dispatches the edited request through `execute_run_agents`.
+    fn handle_accept(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.decided || self.spawning.is_some() || !self.wants_focus(ctx) {
+            return;
+        }
+        if let Some(reason) = accept_disabled_reason_with_auth(
+            &self.orchestration_edit_state.orchestration_config_state,
+            ctx,
+        ) {
+            self.accept_error = Some(reason);
+            ctx.notify();
+            return;
+        }
+        self.decided = true;
+        self.accept_error = None;
+        self.mode = CardMode::Acceptance;
+        let request = self.to_request();
+        let action_id = self.action_id.clone();
+        self.action_model.update(ctx, |action_model, ctx| {
+            action_model.execute_run_agents(&action_id, request, ctx);
+        });
+        ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+        ctx.notify();
+    }
+
+    /// Reject (PRODUCT 56): resolves the request as rejected exactly once,
+    /// from the acceptance card or any configuration page (PRODUCT 28).
+    fn handle_reject(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.decided || self.spawning.is_some() || !self.wants_focus(ctx) {
+            return;
+        }
+        self.decided = true;
+        self.mode = CardMode::Acceptance;
+        ctx.emit(TuiRunAgentsCardViewEvent::RejectRequested);
+        ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+        ctx.notify();
+    }
+
+    /// Opens configuration on the first page (PRODUCT 16).
+    fn handle_configure(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.wants_focus(ctx) {
+            return;
+        }
+        let first = Self::page_sequence(&self.orchestration_edit_state.orchestration_config_state)
+            .first()
+            .copied();
+        if let Some(first) = first {
+            self.open_page(first, ctx);
+        }
+    }
+
+    /// Escape from configuration: completed pages keep their confirmed
+    /// selections; the current page's unconfirmed highlight is discarded
+    /// (PRODUCT 27). Active custom-text editing unwinds first.
+    fn handle_back(&mut self, ctx: &mut ViewContext<Self>) {
+        let consumed = self
+            .selector
+            .update(ctx, |selector, ctx| selector.handle_back(ctx));
+        if consumed {
+            return;
+        }
+        if matches!(self.mode, CardMode::Configuring { .. }) {
+            self.mode = CardMode::Acceptance;
+            ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
+            ctx.notify();
+        }
+    }
+
+    /// Confirms the selector's highlighted option (Enter, PRODUCT 31).
+    fn handle_confirm_selection(&mut self, ctx: &mut ViewContext<Self>) {
+        self.selector.update(ctx, |selector, ctx| {
+            selector.confirm_highlighted(ctx);
+        });
+    }
+
+    // ── Rendering ───────────────────────────────────────────────────
+
+    /// Deterministic identities for the proposed agents, from the pinned
+    /// palette (PRODUCT 11-13).
+    fn agent_identities(&self) -> Vec<&AgentIdentity> {
+        let names = self
+            .request_fields
+            .agent_run_configs
+            .iter()
+            .map(|config| config.name.as_str());
+        assign_agent_identity_indices(names, self.identity_palette.len())
+            .into_iter()
+            .filter_map(|index| self.identity_palette.get(index))
+            .collect()
+    }
+
+    /// The harness display label for the current selection (PRODUCT 39).
+    fn harness_label(&self, ctx: &AppContext) -> String {
+        match Harness::parse_orchestration_harness(
+            &self
+                .orchestration_edit_state
+                .orchestration_config_state
+                .harness_type,
+        ) {
+            Some(harness) => HarnessAvailabilityModel::as_ref(ctx)
+                .display_name_for(harness)
+                .to_string(),
+            None => "Warp".to_string(),
+        }
+    }
+
+    /// The display label for an id within a snapshot, falling back to the id.
+    fn label_for_id(snapshot: &OptionSnapshot, id: &str, fallback: &str) -> String {
+        snapshot
+            .rows
+            .iter()
+            .find(|row| row.id == id)
+            .map(|row| row.label.clone())
+            .unwrap_or_else(|| {
+                if id.is_empty() {
+                    fallback.to_string()
+                } else {
+                    id.to_string()
+                }
+            })
+    }
+
+    /// One `label: value` metadata row with a bold selected value.
+    fn render_metadata_row(
+        label: &str,
+        value: String,
+        builder: &TuiUiBuilder,
+    ) -> Box<dyn TuiElement> {
+        TuiText::from_spans([
+            (format!("{label:<12}"), builder.muted_text_style()),
+            (value, builder.orchestration_selected_value_style()),
+        ])
+        .truncate()
+        .finish()
+    }
+
+    /// The acceptance card body (PRODUCT 9-17).
+    fn render_acceptance(&self, app: &AppContext, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
+        let state = &self.orchestration_edit_state.orchestration_config_state;
+        let mut column = TuiFlex::column();
+
+        // Title row with the attention glyph, on the tinted header.
+        column.add_child(
+            TuiText::from_spans([(
+                format!("◆ {RUN_AGENTS_CARD_TITLE}"),
+                builder.orchestration_title_style(),
+            )])
+            .finish(),
+        );
+
+        let summary = if self.request_fields.summary.trim().is_empty() {
+            format!(
+                "Spawn {} agent(s) to address this task.",
+                self.request_fields.agent_run_configs.len()
+            )
+        } else {
+            self.request_fields.summary.clone()
+        };
+        column.add_child(
+            TuiContainer::new(
+                TuiText::new(summary)
+                    .with_style(builder.primary_text_style())
+                    .finish(),
+            )
+            .with_padding_top(1)
+            .finish(),
+        );
+
+        // Agent list: every proposed agent's name with its identity.
+        column.add_child(
+            TuiContainer::new(
+                TuiText::new(format!(
+                    "Agents ({})",
+                    self.request_fields.agent_run_configs.len()
+                ))
+                .with_style(builder.muted_text_style())
+                .truncate()
+                .finish(),
+            )
+            .with_padding_top(1)
+            .finish(),
+        );
+        for (config, identity) in self
+            .request_fields
+            .agent_run_configs
+            .iter()
+            .zip(self.agent_identities())
+        {
+            column.add_child(
+                TuiText::from_spans([
+                    (
+                        format!("{} ", identity.glyph),
+                        identity.style.add_modifier(Modifier::BOLD),
+                    ),
+                    (config.name.clone(), builder.primary_text_style()),
+                ])
+                .truncate()
+                .finish(),
+            );
+        }
+
+        // Run-wide configuration values (PRODUCT 9-10, 14).
+        let is_remote = state.execution_mode.is_remote();
+        let mut metadata = TuiFlex::column();
+        metadata.add_child(Self::render_metadata_row(
+            "Location",
+            if is_remote { "Cloud" } else { "Local" }.to_string(),
+            builder,
+        ));
+        metadata.add_child(Self::render_metadata_row(
+            "Harness",
+            self.harness_label(app),
+            builder,
+        ));
+        if is_remote {
+            if should_show_auth_secret_picker(state) {
+                let api_key = match &state.auth_secret_selection {
+                    AuthSecretSelection::Named(name) => name.clone(),
+                    AuthSecretSelection::Inherit => "Skip (advanced)".to_string(),
+                    AuthSecretSelection::Unset | AuthSecretSelection::CreatingNew => {
+                        "Select an API key".to_string()
+                    }
+                };
+                metadata.add_child(Self::render_metadata_row("API key", api_key, builder));
+            }
+            let host = match &state.execution_mode {
+                RunAgentsExecutionMode::Remote { worker_host, .. }
+                    if !worker_host.trim().is_empty() =>
+                {
+                    worker_host.clone()
+                }
+                RunAgentsExecutionMode::Remote { .. } | RunAgentsExecutionMode::Local => {
+                    ORCHESTRATION_WARP_WORKER_HOST.to_string()
+                }
+            };
+            metadata.add_child(Self::render_metadata_row("Host", host, builder));
+            let environment_id = match &state.execution_mode {
+                RunAgentsExecutionMode::Remote { environment_id, .. } => environment_id.clone(),
+                RunAgentsExecutionMode::Local => String::new(),
+            };
+            let environment = Self::label_for_id(
+                &environment_snapshot(state, app),
+                &environment_id,
+                "Empty environment",
+            );
+            metadata.add_child(Self::render_metadata_row(
+                "Environment",
+                environment,
+                builder,
+            ));
+        }
+        let model = Self::label_for_id(
+            &model_snapshot(state, app),
+            &state.model_id,
+            "Default model",
+        );
+        metadata.add_child(Self::render_metadata_row("Model", model, builder));
+        column.add_child(
+            TuiContainer::new(metadata.finish())
+                .with_padding_top(1)
+                .finish(),
+        );
+
+        // Inline validation (PRODUCT 53) or the soft empty-env nudge.
+        if let Some(error) = &self.accept_error {
+            column.add_child(
+                TuiText::new(error.clone())
+                    .with_style(builder.error_text_style())
+                    .finish(),
+            );
+        } else if let Some(message) = empty_env_recommendation_message(&state.execution_mode, app) {
+            column.add_child(
+                TuiText::new(message)
+                    .with_style(builder.attention_glyph_style())
+                    .truncate()
+                    .finish(),
+            );
+        }
+
+        // Action hints replace the normal input footer (PRODUCT 2, 16-17);
+        // they wrap rather than truncate so every available action stays
+        // visible at narrow widths (PRODUCT 15).
+        column.add_child(
+            TuiContainer::new(
+                TuiText::new("enter accept · ctrl-e configure · ctrl-c reject")
+                    .with_style(builder.muted_text_style())
+                    .finish(),
+            )
+            .with_padding_top(1)
+            .finish(),
+        );
+
+        column.finish()
+    }
+
+    /// The configuring body: the active selector page plus its hints (which
+    /// wrap rather than truncate at narrow widths, PRODUCT 15).
+    fn render_configuring(&self, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
+        TuiFlex::column()
+            .child(TuiChildView::new(&self.selector).finish())
+            .child(
+                TuiContainer::new(
+                    TuiText::new("↑↓ move · 1-9 select · enter confirm · esc back · ctrl-c reject")
+                        .with_style(builder.muted_text_style())
+                        .finish(),
+                )
+                .with_padding_top(1)
+                .finish(),
+            )
+            .finish()
+    }
+}
+
+impl Entity for TuiRunAgentsCardView {
+    type Event = TuiRunAgentsCardViewEvent;
+}
+
+impl TuiView for TuiRunAgentsCardView {
+    fn ui_name() -> &'static str {
+        "TuiRunAgentsCardView"
+    }
+
+    fn child_view_ids(&self, _app: &AppContext) -> Vec<EntityId> {
+        vec![self.selector.id()]
+    }
+
+    fn keymap_context(&self, _ctx: &AppContext) -> keymap::Context {
+        let mut context = keymap::Context::default();
+        context.set.insert(Self::ui_name());
+        match self.mode {
+            CardMode::Acceptance => context.set.insert(ACCEPTANCE_CONTEXT_FLAG),
+            CardMode::Configuring { .. } => context.set.insert(CONFIGURING_CONTEXT_FLAG),
+        };
+        context
+    }
+
+    fn render(&self, app: &AppContext) -> Box<dyn TuiElement> {
+        let status = self
+            .action_model
+            .as_ref(app)
+            .get_action_status(&self.action_id);
+
+        // Terminal, spawning, restored, and still-streaming states reuse the
+        // shared fallback tool-call row and its `tool_call_labels` copy
+        // (PRODUCT 7, 57).
+        let interactive = !self.is_restored
+            && self.spawning.is_none()
+            && matches!(status, Some(AIActionStatus::Blocked));
+        if !interactive {
+            return render_fallback_tool_call_section(
+                &self.action,
+                status.as_ref(),
+                false,
+                None,
+                app,
+            );
+        }
+
+        let builder = TuiUiBuilder::from_app(app);
+        let body = match self.mode {
+            CardMode::Acceptance => self.render_acceptance(app, &builder),
+            CardMode::Configuring { .. } => self.render_configuring(&builder),
+        };
+        // The orchestration treatment: a themed magenta-tinted surface
+        // (PRODUCT 14), padded one cell on each side.
+        TuiContainer::new(body)
+            .with_background(builder.orchestration_surface_background())
+            .with_padding_x(1)
+            .finish()
+    }
+}
+
+impl TypedActionView for TuiRunAgentsCardView {
+    type Action = TuiRunAgentsCardAction;
+
+    fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
+        match action {
+            TuiRunAgentsCardAction::Accept => self.handle_accept(ctx),
+            TuiRunAgentsCardAction::Configure => self.handle_configure(ctx),
+            TuiRunAgentsCardAction::ConfirmSelection => self.handle_confirm_selection(ctx),
+            TuiRunAgentsCardAction::Back => self.handle_back(ctx),
+            TuiRunAgentsCardAction::Reject => self.handle_reject(ctx),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "run_agents_card_view_tests.rs"]
+mod tests;
