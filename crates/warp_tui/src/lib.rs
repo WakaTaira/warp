@@ -31,6 +31,7 @@ mod input_suggestions_mode;
 mod keybindings;
 mod model_menu;
 mod option_selector;
+mod orchestration_model;
 mod resume;
 mod run_agents_card_view;
 mod sessions;

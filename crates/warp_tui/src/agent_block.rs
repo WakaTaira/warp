@@ -605,7 +605,10 @@ impl TuiAIBlock {
                         );
                     }
                     AIAgentOutputMessageType::Action(action) => {
-                        sections.push(TuiAIBlockSection::ToolCall(Box::new(action.clone())));
+                        // WaitForEvents renders nothing, matching the GUI.
+                        if !matches!(action.action, AIAgentActionType::WaitForEvents { .. }) {
+                            sections.push(TuiAIBlockSection::ToolCall(Box::new(action.clone())));
+                        }
                     }
                     AIAgentOutputMessageType::Reasoning {
                         text,
@@ -678,6 +681,22 @@ impl TuiAIBlock {
                         TodoOperation::UpdateTodos { .. }
                         | TodoOperation::MarkAsCompleted { .. } => {}
                     },
+                    // TODO: add full status rendering based on MOCs.
+                    AIAgentOutputMessageType::MessagesReceivedFromAgents { messages } => {
+                        for received in messages {
+                            sections.push(TuiAIBlockSection::PlainText(format!(
+                                "Received message from agent {}: {}",
+                                received.sender_agent_id, received.subject
+                            )));
+                        }
+                    }
+                    AIAgentOutputMessageType::EventsFromAgents { event_ids } => {
+                        let count = event_ids.len();
+                        let plural = if count == 1 { "" } else { "s" };
+                        sections.push(TuiAIBlockSection::PlainText(format!(
+                            "Received {count} agent lifecycle event{plural}"
+                        )));
+                    }
                     // Other message kinds are not rendered by the TUI transcript yet.
                     AIAgentOutputMessageType::Summarization { .. }
                     | AIAgentOutputMessageType::Subagent(_)
@@ -686,9 +705,7 @@ impl TuiAIBlock {
                     | AIAgentOutputMessageType::CommentsAddressed { .. }
                     | AIAgentOutputMessageType::DebugOutput { .. }
                     | AIAgentOutputMessageType::ArtifactCreated(_)
-                    | AIAgentOutputMessageType::SkillInvoked(_)
-                    | AIAgentOutputMessageType::MessagesReceivedFromAgents { .. }
-                    | AIAgentOutputMessageType::EventsFromAgents { .. } => {}
+                    | AIAgentOutputMessageType::SkillInvoked(_) => {}
                 }
             }
         }

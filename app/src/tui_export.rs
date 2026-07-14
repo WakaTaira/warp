@@ -26,10 +26,10 @@ pub use crate::ai::agent::{
     AIAgentActionType, AIAgentContext, AIAgentExchangeId, AIAgentInput, AIAgentOutput,
     AIAgentOutputMessage, AIAgentOutputMessageType, AIAgentPtyWriteMode, AIAgentText,
     AIAgentTextSection, AIAgentTodo, AIAgentTodoId, AskUserQuestionResult, CancellationReason,
-    FileGlobV2Result, GrepResult, MessageId, RequestCommandOutputResult, RunAgentsAgentOutcomeKind,
-    RunAgentsResult, SearchCodebaseFailureReason, SearchCodebaseResult, ServerOutputId, Shared,
-    ShellCommandDelay, StartAgentExecutionMode, SuggestNewConversationResult, SummarizationType,
-    TodoOperation, UserQueryMode,
+    FileGlobV2Result, GrepResult, MessageId, RenderableAIError, RequestCommandOutputResult,
+    RunAgentsAgentOutcomeKind, RunAgentsResult, SearchCodebaseFailureReason, SearchCodebaseResult,
+    ServerOutputId, Shared, ShellCommandDelay, StartAgentExecutionMode,
+    SuggestNewConversationResult, SummarizationType, TodoOperation, UserQueryMode,
 };
 pub use crate::ai::agent_conversations_model::{
     query_conversation_entries, AgentConversationEntry, AgentConversationEntryId,
@@ -37,6 +37,7 @@ pub use crate::ai::agent_conversations_model::{
     AgentConversationsModelEvent, AgentManagementFilters, AgentRunDisplayStatus, HarnessFilter,
     OwnerFilter,
 };
+pub use crate::ai::ambient_agents::AmbientAgentTaskId;
 pub use crate::ai::blocklist::agent_view::{
     AgentViewController, AgentViewDisplayMode, AgentViewEntryOrigin, EnterAgentViewError,
     EphemeralMessageModel,
@@ -65,6 +66,9 @@ pub use crate::ai::blocklist::history_model::{
 use crate::ai::blocklist::local_agent_task_sync_model::LocalAgentTaskSyncModel;
 #[cfg(any(test, feature = "test-util"))]
 use crate::ai::blocklist::orchestration_event_streamer::OrchestrationEventStreamer;
+pub use crate::ai::blocklist::orchestration_event_streamer::{
+    register_agent_event_consumer, unregister_agent_event_consumer,
+};
 #[cfg(any(test, feature = "test-util"))]
 use crate::ai::blocklist::orchestration_events::OrchestrationEventService;
 pub use crate::ai::blocklist::telemetry::{
@@ -79,7 +83,8 @@ pub use crate::ai::blocklist::{
     BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController, BlocklistAIInputModel,
     InputConfig, InputModePolicy, InputModePolicyHandle, InputType, InputTypeAutoDetectionSource,
     PolicyConfigUpdate, RequestFileEditsExecutor, RunAgentsExecutor, RunAgentsExecutorEvent,
-    RunAgentsSpawningSnapshot, ShellCommandExecutor, ShellCommandExecutorEvent,
+    RunAgentsSpawningSnapshot, ShellCommandExecutor, ShellCommandExecutorEvent, StartAgentExecutor,
+    StartAgentExecutorEvent, StartAgentOutcome, StartAgentRequest, StartAgentRequestId,
 };
 #[cfg(any(test, feature = "test-util"))]
 use crate::ai::blocklist::{BlocklistAIPermissions, QueuedQueryModel};
@@ -92,8 +97,7 @@ pub use crate::ai::connected_self_hosted_workers::{
 pub use crate::ai::conversation_export::{
     export_conversation_markdown, ConversationFileExport, ConversationFileExportError,
 };
-#[cfg(any(test, feature = "test-util"))]
-use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
+pub use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 pub use crate::ai::get_relevant_files::controller::GetRelevantFilesController;
 pub use crate::ai::harness_availability::{
     AuthSecretEntry, AuthSecretFetchState, HarnessAvailability, HarnessAvailabilityEvent,
@@ -134,8 +138,8 @@ pub use crate::search::slash_command_menu::static_commands::commands::{
     self as slash_commands, COMMAND_REGISTRY,
 };
 pub use crate::search::slash_command_menu::{SlashCommandId, StaticCommand};
-#[cfg(any(test, feature = "test-util"))]
-use crate::server::server_api::ServerApiProvider;
+pub use crate::server::server_api::ai::{AIClient, AgentConfigSnapshot};
+pub use crate::server::server_api::ServerApiProvider;
 #[cfg(any(test, feature = "test-util"))]
 use crate::server::sync_queue::SyncQueue;
 #[cfg(any(test, feature = "test-util"))]
@@ -292,6 +296,11 @@ pub fn register_tui_session_test_singletons(app: &mut warpui::App) {
         CodebaseIndexManager::new_for_test(ServerApiProvider::as_ref(ctx).get(), ctx)
     });
     app.add_singleton_model(AgentConversationsModel::new);
+    // Conversation persistence reads the global resource handles.
+    let global_resources = crate::GlobalResourceHandles::mock(app);
+    app.add_singleton_model(|_| {
+        crate::GlobalResourceHandlesProvider::new(global_resources.clone())
+    });
 }
 
 /// [`register_tui_session_test_singletons`] plus the remaining singletons a
