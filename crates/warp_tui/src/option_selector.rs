@@ -168,7 +168,8 @@ impl TuiOptionSelector {
     }
 
     /// Whether the custom-text footer editor is currently active.
-    pub(crate) fn is_editing_custom_text(&self) -> bool {
+    #[cfg(test)]
+    fn is_editing_custom_text(&self) -> bool {
         self.custom_text.is_some()
     }
 
