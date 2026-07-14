@@ -22,6 +22,7 @@
 use warpui_core::keymap::{BindingLens, IsBindingValid, Trigger};
 use warpui_core::AppContext;
 
+use crate::editor_view::TuiEditorView;
 use crate::input::TuiInputView;
 use crate::root_view::RootTuiView;
 use crate::terminal_session_view::TuiTerminalSessionView;
@@ -37,6 +38,7 @@ pub(crate) fn init(app: &mut AppContext) {
     crate::root_view::init(app);
     crate::terminal_session_view::init(app);
     crate::input::init(app);
+    crate::editor_view::init(app);
 
     register_binding_validators(app);
 }
@@ -47,6 +49,7 @@ fn register_binding_validators(app: &mut AppContext) {
     app.register_tui_binding_validator::<RootTuiView>(is_tui_owned_binding);
     app.register_tui_binding_validator::<TuiTerminalSessionView>(is_tui_owned_binding);
     app.register_tui_binding_validator::<TuiInputView>(is_tui_owned_binding);
+    app.register_tui_binding_validator::<TuiEditorView>(is_tui_owned_binding);
     app.register_tui_binding_validator::<TuiTranscriptView>(is_tui_owned_binding);
 }
 

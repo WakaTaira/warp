@@ -30,6 +30,7 @@ mod keybindings;
 mod model_menu;
 // Not consumed yet: the TUI orchestration card slice embeds this selector
 // and removes the allow.
+mod editor_view;
 #[allow(dead_code)]
 mod option_selector;
 mod resume;

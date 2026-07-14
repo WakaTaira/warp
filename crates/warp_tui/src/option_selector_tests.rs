@@ -16,6 +16,8 @@ use super::{
     OptionSelectorHeader, SelectorItem, TuiOptionSelector, TuiOptionSelectorAction,
     TuiOptionSelectorEvent,
 };
+use crate::editor_element::TuiEditorAction;
+use crate::editor_view::{TuiEditorCommand, TuiEditorViewAction};
 use crate::test_fixtures::TestHostView;
 use crate::tui_builder::TuiUiBuilder;
 
@@ -64,6 +66,17 @@ fn header() -> OptionSelectorHeader {
 
 type CapturedEvents = Rc<RefCell<Vec<TuiOptionSelectorEvent>>>;
 
+/// The captured events with `LayoutChanged` filtered out, for tests that
+/// assert on the primary confirmation flow.
+fn primary_events(events: &CapturedEvents) -> Vec<TuiOptionSelectorEvent> {
+    events
+        .borrow()
+        .iter()
+        .filter(|event| **event != TuiOptionSelectorEvent::LayoutChanged)
+        .cloned()
+        .collect()
+}
+
 /// Adds a selector in a fresh TUI window and captures its emitted events.
 fn add_selector(app: &mut App) -> (ViewHandle<TuiOptionSelector>, CapturedEvents) {
     app.add_singleton_model(|_| Appearance::mock());
@@ -75,7 +88,7 @@ fn add_selector(app: &mut App) -> (ViewHandle<TuiOptionSelector>, CapturedEvents
             },
             |_| TestHostView,
         );
-        ctx.add_typed_action_tui_view(window_id, |_| TuiOptionSelector::new())
+        ctx.add_typed_action_tui_view(window_id, TuiOptionSelector::new)
     });
     let events: CapturedEvents = Rc::new(RefCell::new(Vec::new()));
     let events_for_subscription = events.clone();
@@ -90,7 +103,167 @@ fn add_selector(app: &mut App) -> (ViewHandle<TuiOptionSelector>, CapturedEvents
 /// Sets the page under the shared test header.
 fn set_page(app: &mut App, selector: &ViewHandle<TuiOptionSelector>, snapshot: OptionSnapshot) {
     selector.update(app, |selector, ctx| {
-        selector.set_page(header(), snapshot, ctx);
+        selector.set_page(header(), snapshot, false, ctx);
+    });
+}
+
+#[test]
+fn searchable_page_starts_on_the_selected_row_and_digits_still_confirm() {
+    App::test((), |mut app| async move {
+        let (selector, events) = add_selector(&mut app);
+        set_searchable_page(
+            &mut app,
+            &selector,
+            snapshot(&["auto", "gpt-5", "claude"], Some("gpt-5")),
+        );
+        assert!(highlighted_line(&app, &selector).contains("(2) gpt-5"));
+        assert!(render_lines(&app, &selector, 60)
+            .iter()
+            .any(|line| line.contains("Search:")));
+
+        act(
+            &mut app,
+            &selector,
+            TuiOptionSelectorAction::SelectNumberedOption(3),
+        );
+        assert_eq!(
+            primary_events(&events),
+            [TuiOptionSelectorEvent::Confirmed {
+                id: "claude".to_string()
+            }]
+        );
+    });
+}
+
+#[test]
+fn up_from_top_focuses_search_and_down_returns_to_first_row() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        set_searchable_page(
+            &mut app,
+            &selector,
+            snapshot(&["auto", "gpt-5"], Some("auto")),
+        );
+
+        act(&mut app, &selector, TuiOptionSelectorAction::MoveUp);
+        assert!(app.read(|ctx| selector.as_ref(ctx).search_field.as_ref(ctx).is_focused()));
+        assert!(app.read(|ctx| selector.as_ref(ctx).selection.selected_index().is_none()));
+
+        act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
+        assert!(highlighted_line(&app, &selector).contains("(1) auto"));
+    });
+}
+
+#[test]
+fn focused_search_filters_including_digits_and_enter_confirms_top_match() {
+    App::test((), |mut app| async move {
+        let (selector, events) = add_selector(&mut app);
+        set_searchable_page(
+            &mut app,
+            &selector,
+            snapshot(&["auto (genius)", "gpt-5", "claude"], Some("auto (genius)")),
+        );
+        act(&mut app, &selector, TuiOptionSelectorAction::MoveUp);
+        edit_search(
+            &mut app,
+            &selector,
+            TuiEditorAction::InsertText("gpt-5".to_string()),
+        );
+
+        let lines = render_lines(&app, &selector, 60);
+        assert!(lines.iter().any(|line| line.contains("gpt-5")));
+        assert!(!lines.iter().any(|line| line.contains("auto (genius)")));
+        confirm(&mut app, &selector);
+        assert_eq!(
+            primary_events(&events),
+            [TuiOptionSelectorEvent::Confirmed {
+                id: "gpt-5".to_string()
+            }]
+        );
+    });
+}
+
+#[test]
+fn typing_a_letter_from_the_list_focuses_and_seeds_search() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        set_searchable_page(
+            &mut app,
+            &selector,
+            snapshot(&["auto", "gpt-5"], Some("auto")),
+        );
+        act(
+            &mut app,
+            &selector,
+            TuiOptionSelectorAction::FocusSearchAndInsert('g'),
+        );
+        assert!(app.read(|ctx| selector.as_ref(ctx).search_field.as_ref(ctx).is_focused()));
+        assert_eq!(
+            app.read(|ctx| selector.as_ref(ctx).search_field.as_ref(ctx).text(ctx)),
+            "g"
+        );
+        assert!(render_lines(&app, &selector, 60)
+            .iter()
+            .any(|line| line.contains("gpt-5")));
+    });
+}
+
+#[test]
+fn search_no_matches_and_escape_clear_are_rendered_without_moving_the_field() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        set_searchable_page(
+            &mut app,
+            &selector,
+            snapshot(
+                &["auto", "gpt-5", "claude", "gemini", "pareto"],
+                Some("auto"),
+            ),
+        );
+        act(&mut app, &selector, TuiOptionSelectorAction::MoveUp);
+        edit_search(
+            &mut app,
+            &selector,
+            TuiEditorAction::InsertText("zzz".to_string()),
+        );
+        let lines = render_lines(&app, &selector, 60);
+        assert!(lines.iter().any(|line| line.contains("Search:")));
+        assert!(lines.iter().any(|line| line.contains("No matches")));
+
+        let consumed = selector.update(&mut app, |selector, ctx| selector.handle_back(ctx));
+        assert!(consumed);
+        let lines = render_lines(&app, &selector, 60);
+        assert!(lines.iter().any(|line| line.contains("(1) auto")));
+        assert!(lines.iter().any(|line| line.contains("Search:")));
+    });
+}
+
+/// Sets a searchable page under the shared test header.
+fn set_searchable_page(
+    app: &mut App,
+    selector: &ViewHandle<TuiOptionSelector>,
+    snapshot: OptionSnapshot,
+) {
+    selector.update(app, |selector, ctx| {
+        selector.set_page(header(), snapshot, true, ctx);
+    });
+}
+
+/// Applies a text-field action to the active custom-text child.
+fn edit_custom_text(
+    app: &mut App,
+    selector: &ViewHandle<TuiOptionSelector>,
+    action: TuiEditorViewAction,
+) {
+    let field = selector.read(app, |selector, _| selector.custom_text_field.clone());
+    field.update(app, |field, ctx| field.handle_action(&action, ctx));
+}
+
+/// Applies a shared editor action to the search child.
+fn edit_search(app: &mut App, selector: &ViewHandle<TuiOptionSelector>, action: TuiEditorAction) {
+    let editor = selector.read(app, |selector, _| selector.search_field.clone());
+    editor.update(app, |editor, ctx| {
+        editor.handle_action(&TuiEditorViewAction::Editor(action), ctx);
     });
 }
 
@@ -128,7 +301,11 @@ fn laid_out_element(
     width: u16,
     app: &AppContext,
 ) -> (Box<dyn TuiElement>, TuiRect) {
-    let mut element = selector.as_ref(app).render(app);
+    let selector_ref = selector.as_ref(app);
+    for editor in [&selector_ref.search_field, &selector_ref.custom_text_field] {
+        rendered_views.insert(editor.id(), editor.as_ref(app).render(app));
+    }
+    let mut element = selector_ref.render(app);
     let size = {
         let mut layout_ctx = TuiLayoutContext { rendered_views };
         element.layout(
@@ -285,7 +462,7 @@ fn digits_are_viewport_relative_in_scrolled_lists() {
             TuiOptionSelectorAction::SelectNumberedOption(1),
         );
         assert_eq!(
-            events.borrow().as_slice(),
+            primary_events(&events),
             [TuiOptionSelectorEvent::Confirmed {
                 id: "row-2".to_string()
             }],
@@ -432,25 +609,33 @@ fn custom_text_editor_trims_validates_and_submits() {
 
         // Whitespace-only input stays editable with a concise error
         //.
-        act(
+        edit_custom_text(
             &mut app,
             &selector,
-            TuiOptionSelectorAction::InsertChar(' '),
+            TuiEditorViewAction::Editor(TuiEditorAction::InsertChar(' ')),
         );
         confirm(&mut app, &selector);
-        assert!(events.borrow().is_empty());
+        assert!(primary_events(&events).is_empty());
         assert!(render_lines(&app, &selector, 60)
             .iter()
             .any(|line| line.contains("Enter a value to continue.")));
 
         // Valid input is trimmed and submitted.
         for c in "my-host ".chars() {
-            act(&mut app, &selector, TuiOptionSelectorAction::InsertChar(c));
+            edit_custom_text(
+                &mut app,
+                &selector,
+                TuiEditorViewAction::Editor(TuiEditorAction::InsertChar(c)),
+            );
         }
-        act(&mut app, &selector, TuiOptionSelectorAction::Backspace);
+        edit_custom_text(
+            &mut app,
+            &selector,
+            TuiEditorViewAction::Command(TuiEditorCommand::Backspace),
+        );
         confirm(&mut app, &selector);
         assert_eq!(
-            events.borrow().as_slice(),
+            primary_events(&events),
             [TuiOptionSelectorEvent::CustomTextSubmitted {
                 value: "my-host".to_string()
             }],
@@ -464,7 +649,7 @@ fn custom_text_editor_trims_validates_and_submits() {
         confirm(&mut app, &selector);
         assert!(render_lines(&app, &selector, 60)
             .iter()
-            .any(|line| line.contains("Custom host…: my-host▏")));
+            .any(|line| line.contains("Custom host…: my-host")));
     });
 }
 
@@ -504,6 +689,69 @@ fn create_new_auth_secret_footer_is_ignored() {
 }
 
 #[test]
+fn layout_changed_is_emitted_only_when_overflow_markers_toggle() {
+    App::test((), |mut app| async move {
+        let (selector, events) = add_selector(&mut app);
+        set_page(
+            &mut app,
+            &selector,
+            snapshot(&["a", "b", "c", "d", "e", "f"], Some("a")),
+        );
+        events.borrow_mut().clear();
+
+        // Moves within the viewport do not scroll, so nothing is emitted.
+        for _ in 0..3 {
+            act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
+        }
+        assert!(!events
+            .borrow()
+            .contains(&TuiOptionSelectorEvent::LayoutChanged));
+
+        // Scrolling past the viewport reveals the `↑` marker: one event.
+        act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
+        assert_eq!(
+            events
+                .borrow()
+                .iter()
+                .filter(|event| **event == TuiOptionSelectorEvent::LayoutChanged)
+                .count(),
+            1,
+        );
+    });
+}
+
+#[test]
+fn layout_changed_is_emitted_when_the_custom_text_error_row_toggles() {
+    App::test((), |mut app| async move {
+        let (selector, events) = add_selector(&mut app);
+        let mut with_footer = snapshot(&["warp"], Some("warp"));
+        with_footer.footer = Some(OptionFooter::CustomText {
+            label: "Custom host…".to_string(),
+        });
+        set_page(&mut app, &selector, with_footer);
+        act(&mut app, &selector, TuiOptionSelectorAction::SelectItem(1));
+        events.borrow_mut().clear();
+
+        // An empty submit adds the validation-error row.
+        confirm(&mut app, &selector);
+        assert!(events
+            .borrow()
+            .contains(&TuiOptionSelectorEvent::LayoutChanged));
+        events.borrow_mut().clear();
+
+        // Typing clears the error row.
+        edit_custom_text(
+            &mut app,
+            &selector,
+            TuiEditorViewAction::Editor(TuiEditorAction::InsertChar('x')),
+        );
+        assert!(events
+            .borrow()
+            .contains(&TuiOptionSelectorEvent::LayoutChanged));
+    });
+}
+
+#[test]
 fn snapshot_refresh_preserves_the_highlighted_row() {
     App::test((), |mut app| async move {
         let (selector, events) = add_selector(&mut app);
@@ -517,7 +765,7 @@ fn snapshot_refresh_preserves_the_highlighted_row() {
         });
         confirm(&mut app, &selector);
         assert_eq!(
-            events.borrow().as_slice(),
+            primary_events(&events),
             [TuiOptionSelectorEvent::Confirmed {
                 id: "c".to_string()
             }],
@@ -539,7 +787,7 @@ fn snapshot_refresh_falls_back_to_the_selected_value_when_the_highlight_vanishes
         });
         confirm(&mut app, &selector);
         assert_eq!(
-            events.borrow().as_slice(),
+            primary_events(&events),
             [TuiOptionSelectorEvent::Confirmed {
                 id: "a".to_string()
             }],
@@ -590,11 +838,12 @@ fn paste_is_consumed_only_while_editing_custom_text() {
         // The editor consumes the paste (only the first line's printable
         // characters are inserted; the editor is single-line).
         assert!(dispatch(&app, &selector, &paste));
-        // A paste with no printable first-line characters is not consumed.
+        // The shared editor consumes the paste event, but its single-line
+        // policy inserts nothing when the first line is empty.
         let control_only = TuiEvent::Paste {
             text: "\nsecond line".to_string(),
         };
-        assert!(!dispatch(&app, &selector, &control_only));
+        assert!(dispatch(&app, &selector, &control_only));
     });
 }
 

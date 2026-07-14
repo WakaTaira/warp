@@ -42,6 +42,9 @@ use warpui_core::{
 
 use super::kill_buffer::KillBuffer;
 use crate::editor_element::{TuiEditorAction, TuiEditorElement, TuiEditorStyles};
+use crate::editor_view::{
+    register_shared_editor_bindings, TuiEditorBindingTarget, TuiEditorCommand,
+};
 use crate::inline_menu::{active_inline_menu, TuiInlineMenu, TuiInlineMenuAccepted};
 use crate::input_mode_policy::{self, AI_LOCKED_CONFIG, SHELL_LOCKED_CONFIG};
 use crate::input_suggestions_mode::TuiInputSuggestionsModeModel;
@@ -72,8 +75,14 @@ const INPUT_HANDLES_ESCAPE_FLAG: &str = "TuiInputHandlesEscape";
 /// insertion is not a binding — it stays element-level in
 /// [`TuiEditorElement`]'s event dispatch, matching the GUI.
 pub fn init(app: &mut AppContext) {
+    register_shared_editor_bindings(
+        app,
+        TuiEditorBindingTarget::Input,
+        id!("TuiInputView"),
+        TuiInputAction::from,
+    );
     app.register_editable_bindings([
-        // ── Submit / newline ─────────────────────────────────────────
+        // Submit / newline and contextual Escape are input policy, not editor policy.
         EditableBinding::new(
             "tui:input:submit",
             "Submit the input",
@@ -114,128 +123,7 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(id!("TuiInputView") & id!(INPUT_HANDLES_ESCAPE_FLAG))
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("escape"),
-        // ── Deletion ───────────────────────────────────────────────────
-        EditableBinding::new(
-            "tui:input:backspace",
-            "Delete the previous character",
-            TuiInputAction::Backspace,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("backspace"),
-        EditableBinding::new(
-            "tui:input:backspace",
-            "Delete the previous character",
-            TuiInputAction::Backspace,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("shift-backspace"),
-        EditableBinding::new(
-            "tui:input:backspace",
-            "Delete the previous character",
-            TuiInputAction::Backspace,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-h"),
-        EditableBinding::new(
-            "tui:input:delete_forward",
-            "Delete the next character",
-            TuiInputAction::DeleteForward,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("delete"),
-        EditableBinding::new(
-            "tui:input:delete_forward",
-            "Delete the next character",
-            TuiInputAction::DeleteForward,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-d"),
-        EditableBinding::new(
-            "tui:input:delete_word_backward",
-            "Delete the previous word",
-            TuiInputAction::DeleteWordBackward,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-w"),
-        EditableBinding::new(
-            "tui:input:delete_word_backward",
-            "Delete the previous word",
-            TuiInputAction::DeleteWordBackward,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-backspace"),
-        EditableBinding::new(
-            "tui:input:delete_word_backward",
-            "Delete the previous word",
-            TuiInputAction::DeleteWordBackward,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-backspace"),
-        EditableBinding::new(
-            "tui:input:delete_word_forward",
-            "Delete the next word",
-            TuiInputAction::DeleteWordForward,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-d"),
-        EditableBinding::new(
-            "tui:input:delete_word_forward",
-            "Delete the next word",
-            TuiInputAction::DeleteWordForward,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-delete"),
-        EditableBinding::new(
-            "tui:input:delete_word_forward",
-            "Delete the next word",
-            TuiInputAction::DeleteWordForward,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-delete"),
-        // ── Cursor movement ─────────────────────────────────────────────
-        EditableBinding::new(
-            "tui:input:move_left",
-            "Move cursor left",
-            TuiInputAction::MoveLeft,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("left"),
-        EditableBinding::new(
-            "tui:input:move_left",
-            "Move cursor left",
-            TuiInputAction::MoveLeft,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-b"),
-        EditableBinding::new(
-            "tui:input:move_right",
-            "Move cursor right",
-            TuiInputAction::MoveRight,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("right"),
-        EditableBinding::new(
-            "tui:input:move_right",
-            "Move cursor right",
-            TuiInputAction::MoveRight,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-f"),
+        // Vertical navigation stays on the input so inline menus can intercept it.
         EditableBinding::new(
             "tui:input:move_up",
             "Move cursor up",
@@ -269,103 +157,6 @@ pub fn init(app: &mut AppContext) {
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("ctrl-n"),
         EditableBinding::new(
-            "tui:input:move_word_left",
-            "Move cursor one word left",
-            TuiInputAction::MoveWordLeft,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-left"),
-        EditableBinding::new(
-            "tui:input:move_word_left",
-            "Move cursor one word left",
-            TuiInputAction::MoveWordLeft,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-b"),
-        EditableBinding::new(
-            "tui:input:move_word_left",
-            "Move cursor one word left",
-            TuiInputAction::MoveWordLeft,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-left"),
-        EditableBinding::new(
-            "tui:input:move_word_right",
-            "Move cursor one word right",
-            TuiInputAction::MoveWordRight,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-right"),
-        EditableBinding::new(
-            "tui:input:move_word_right",
-            "Move cursor one word right",
-            TuiInputAction::MoveWordRight,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-f"),
-        EditableBinding::new(
-            "tui:input:move_word_right",
-            "Move cursor one word right",
-            TuiInputAction::MoveWordRight,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-right"),
-        EditableBinding::new(
-            "tui:input:move_to_line_start",
-            "Move cursor to start of line",
-            TuiInputAction::MoveToLineStart,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("home"),
-        EditableBinding::new(
-            "tui:input:move_to_line_start",
-            "Move cursor to start of line",
-            TuiInputAction::MoveToLineStart,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-a"),
-        EditableBinding::new(
-            "tui:input:move_to_line_end",
-            "Move cursor to end of line",
-            TuiInputAction::MoveToLineEnd,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("end"),
-        EditableBinding::new(
-            "tui:input:move_to_line_end",
-            "Move cursor to end of line",
-            TuiInputAction::MoveToLineEnd,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-e"),
-        // ── Selection ────────────────────────────────────────────────────────────────
-        EditableBinding::new(
-            "tui:input:select_left",
-            "Extend selection left",
-            TuiInputAction::SelectLeft,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("shift-left"),
-        EditableBinding::new(
-            "tui:input:select_right",
-            "Extend selection right",
-            TuiInputAction::SelectRight,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("shift-right"),
-        EditableBinding::new(
             "tui:input:select_up",
             "Extend selection up",
             TuiInputAction::SelectUp,
@@ -381,47 +172,7 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(id!("TuiInputView"))
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("shift-down"),
-        EditableBinding::new(
-            "tui:input:select_word_left",
-            "Extend selection one word left",
-            TuiInputAction::SelectWordLeft,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-shift-left"),
-        EditableBinding::new(
-            "tui:input:select_word_left",
-            "Extend selection one word left",
-            TuiInputAction::SelectWordLeft,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-shift-left"),
-        EditableBinding::new(
-            "tui:input:select_word_right",
-            "Extend selection one word right",
-            TuiInputAction::SelectWordRight,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-shift-right"),
-        EditableBinding::new(
-            "tui:input:select_word_right",
-            "Extend selection one word right",
-            TuiInputAction::SelectWordRight,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("alt-shift-right"),
-        EditableBinding::new(
-            "tui:input:select_all",
-            "Select all text",
-            TuiInputAction::SelectAll,
-        )
-        .with_context_predicate(id!("TuiInputView"))
-        .with_group(TUI_BINDING_GROUP)
-        .with_key_binding("ctrl-shift-A"),
-        // ── Kill / yank ─────────────────────────────────────────────────
+        // Kill/yank owns the input's private kill buffer.
         EditableBinding::new(
             "tui:input:kill_to_line_end",
             "Delete to end of line",
@@ -446,16 +197,31 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(id!("TuiInputView"))
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("ctrl-y"),
-        // ── Undo / redo ─────────────────────────────────────────────────
-        EditableBinding::new("tui:input:undo", "Undo", TuiInputAction::Undo)
-            .with_context_predicate(id!("TuiInputView"))
-            .with_group(TUI_BINDING_GROUP)
-            .with_key_binding("ctrl-z"),
-        EditableBinding::new("tui:input:redo", "Redo", TuiInputAction::Redo)
-            .with_context_predicate(id!("TuiInputView"))
-            .with_group(TUI_BINDING_GROUP)
-            .with_key_binding("ctrl-shift-Z"),
     ]);
+}
+
+impl From<TuiEditorCommand> for TuiInputAction {
+    fn from(command: TuiEditorCommand) -> Self {
+        match command {
+            TuiEditorCommand::Backspace => Self::Backspace,
+            TuiEditorCommand::DeleteForward => Self::DeleteForward,
+            TuiEditorCommand::DeleteWordBackward => Self::DeleteWordBackward,
+            TuiEditorCommand::DeleteWordForward => Self::DeleteWordForward,
+            TuiEditorCommand::MoveLeft => Self::MoveLeft,
+            TuiEditorCommand::MoveRight => Self::MoveRight,
+            TuiEditorCommand::MoveWordLeft => Self::MoveWordLeft,
+            TuiEditorCommand::MoveWordRight => Self::MoveWordRight,
+            TuiEditorCommand::MoveToLineStart => Self::MoveToLineStart,
+            TuiEditorCommand::MoveToLineEnd => Self::MoveToLineEnd,
+            TuiEditorCommand::SelectLeft => Self::SelectLeft,
+            TuiEditorCommand::SelectRight => Self::SelectRight,
+            TuiEditorCommand::SelectWordLeft => Self::SelectWordLeft,
+            TuiEditorCommand::SelectWordRight => Self::SelectWordRight,
+            TuiEditorCommand::SelectAll => Self::SelectAll,
+            TuiEditorCommand::Undo => Self::Undo,
+            TuiEditorCommand::Redo => Self::Redo,
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
