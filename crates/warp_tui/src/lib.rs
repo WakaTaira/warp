@@ -38,6 +38,9 @@ mod tool_call_labels;
 mod transcript_view;
 mod transient_hint;
 mod tui_block_list_viewport_source;
+// The view's production consumer lands in the next PR in this stack.
+#[allow(dead_code)]
+mod tui_code_block_view;
 mod tui_column_layout;
 mod tui_diff_storage;
 mod tui_file_edits_view;
