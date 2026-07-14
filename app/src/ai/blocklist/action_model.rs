@@ -955,6 +955,27 @@ impl BlocklistAIActionModel {
         });
     }
 
+    /// Synchronously enqueues a pending action, bypassing async
+    /// preprocessing, so tests can deterministically drive an action into
+    /// `Blocked` status and exercise confirmation flows.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn queue_pending_action_for_test(
+        &mut self,
+        conversation_id: AIConversationId,
+        action: AIAgentAction,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let action_id = action.id.clone();
+        self.pending_actions
+            .entry(conversation_id)
+            .or_default()
+            .push_back(action);
+        ctx.emit(BlocklistAIActionEvent::QueuedAction(action_id.clone()));
+        ctx.emit(BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(
+            action_id,
+        ));
+    }
+
     fn handle_preprocess_actions_results(
         &mut self,
         conversation_id: AIConversationId,
@@ -1033,7 +1054,9 @@ impl BlocklistAIActionModel {
         self.handle_action_result(conversation_id, Arc::new(action_result), None, ctx);
     }
 
-    pub(super) fn cancel_action_with_id(
+    /// Cancels a running or pending action by id with the given reason.
+    /// Public because both frontends' permission cards route Reject here.
+    pub fn cancel_action_with_id(
         &mut self,
         conversation_id: AIConversationId,
         action_id: &AIAgentActionId,

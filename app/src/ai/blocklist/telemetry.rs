@@ -7,7 +7,7 @@ use crate::ai::agent::conversation::AIConversationId;
 
 #[derive(Debug, EnumDiscriminants)]
 #[strum_discriminants(derive(EnumIter))]
-pub(crate) enum BlocklistOrchestrationTelemetryEvent {
+pub enum BlocklistOrchestrationTelemetryEvent {
     TeamAgentCommunicationFailed(TeamAgentCommunicationFailedEvent),
     PlanConfigApprovalToggled(PlanConfigApprovalToggledEvent),
     RunAgentsCardDecision(RunAgentsCardDecisionEvent),
@@ -19,7 +19,7 @@ pub(crate) enum BlocklistOrchestrationTelemetryEvent {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
-pub(crate) enum TeamAgentCommunicationKind {
+pub enum TeamAgentCommunicationKind {
     Message,
     LifecycleEvent,
 }
@@ -27,14 +27,14 @@ pub(crate) enum TeamAgentCommunicationKind {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
-pub(crate) enum TeamAgentCommunicationTransport {
+pub enum TeamAgentCommunicationTransport {
     Local,
     ServerApi,
 }
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
-pub(crate) enum TeamAgentOrchestrationVersion {
+pub enum TeamAgentOrchestrationVersion {
     V1,
     V2,
 }
@@ -42,7 +42,7 @@ pub(crate) enum TeamAgentOrchestrationVersion {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(dead_code)]
-pub(crate) enum TeamAgentCommunicationFailureReason {
+pub enum TeamAgentCommunicationFailureReason {
     InvalidLifecycleEventType,
     MissingSourceConversation,
     MissingSourceIdentifier,
@@ -52,7 +52,7 @@ pub(crate) enum TeamAgentCommunicationFailureReason {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct TeamAgentCommunicationFailedEvent {
+pub struct TeamAgentCommunicationFailedEvent {
     pub communication_kind: TeamAgentCommunicationKind,
     pub transport: TeamAgentCommunicationTransport,
     pub orchestration_version: TeamAgentOrchestrationVersion,
@@ -72,7 +72,7 @@ pub(crate) struct TeamAgentCommunicationFailedEvent {
 /// `Use orchestration` toggle.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum OrchestrationApprovalStatus {
+pub enum OrchestrationApprovalStatus {
     Approved,
     Disapproved,
 }
@@ -82,13 +82,13 @@ pub(crate) enum OrchestrationApprovalStatus {
 /// environment id or worker host.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum OrchestrationExecutionModeKind {
+pub enum OrchestrationExecutionModeKind {
     Local,
     Remote,
 }
 
 impl OrchestrationExecutionModeKind {
-    pub(crate) fn from_run_agents(mode: &ai::agent::action::RunAgentsExecutionMode) -> Self {
+    pub fn from_run_agents(mode: &ai::agent::action::RunAgentsExecutionMode) -> Self {
         if mode.is_remote() {
             Self::Remote
         } else {
@@ -102,7 +102,7 @@ impl OrchestrationExecutionModeKind {
 /// low-cardinality.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum OrchestrationHarnessKind {
+pub enum OrchestrationHarnessKind {
     Oz,
     ClaudeCode,
     Codex,
@@ -112,7 +112,7 @@ pub(crate) enum OrchestrationHarnessKind {
 }
 
 impl OrchestrationHarnessKind {
-    pub(crate) fn from_str(harness_type: &str) -> Self {
+    pub fn from_str(harness_type: &str) -> Self {
         match harness_type {
             "oz" | "" => Self::Oz,
             "claude" | "claude-code" | "claude_code" => Self::ClaudeCode,
@@ -128,7 +128,7 @@ impl OrchestrationHarnessKind {
 /// the dispatched orchestration request and either the original tool
 /// call or an active approved config. Match the server's equivalent
 /// field-name constants so the two telemetry streams can be joined.
-pub(crate) mod orchestration_modified_field {
+pub mod orchestration_modified_field {
     pub const MODEL_ID: &str = "model_id";
     pub const HARNESS: &str = "harness";
     pub const EXECUTION_MODE: &str = "execution_mode";
@@ -138,7 +138,7 @@ pub(crate) mod orchestration_modified_field {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct PlanConfigApprovalToggledEvent {
+pub struct PlanConfigApprovalToggledEvent {
     pub conversation_id: AIConversationId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_id: Option<String>,
@@ -156,14 +156,14 @@ pub(crate) struct PlanConfigApprovalToggledEvent {
 /// Decision a user took on the run_agents confirmation card.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum RunAgentsCardDecision {
+pub enum RunAgentsCardDecision {
     Accept,
     AcceptWithoutOrchestration,
     Reject,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct RunAgentsCardDecisionEvent {
+pub struct RunAgentsCardDecisionEvent {
     pub conversation_id: AIConversationId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_id: Option<String>,
@@ -192,7 +192,7 @@ pub(crate) struct RunAgentsCardDecisionEvent {
 /// [`PlanConfigApprovalToggledEvent`] (the user's approval toggle).
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum OrchestrationEntrySource {
+pub enum OrchestrationEntrySource {
     /// `/orchestrate` slash-command mode on a user query.
     SlashCommandOrchestrate,
     /// `run_agents` confirmation card was shown (not auto-launched).
@@ -200,7 +200,7 @@ pub(crate) enum OrchestrationEntrySource {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct OrchestrationEnteredEvent {
+pub struct OrchestrationEnteredEvent {
     pub conversation_id: AIConversationId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_id: Option<String>,
@@ -211,7 +211,7 @@ pub(crate) struct OrchestrationEnteredEvent {
 /// becomes visible to the user on a plan card. One emission per
 /// `OrchestrationConfigBlockView` instance.
 #[derive(Debug, Serialize)]
-pub(crate) struct AgentProposedConfigEvent {
+pub struct AgentProposedConfigEvent {
     pub conversation_id: AIConversationId,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_id: Option<String>,
@@ -224,7 +224,7 @@ pub(crate) struct AgentProposedConfigEvent {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PillBarPillKind {
+pub enum PillBarPillKind {
     Orchestrator,
     Child,
 }
@@ -232,7 +232,7 @@ pub(crate) enum PillBarPillKind {
 /// Concrete user actions against an orchestration pill bar entry.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PillBarActionKind {
+pub enum PillBarActionKind {
     /// User clicked the pill body. See `switch_outcome` for what
     /// happened next.
     Switch,
@@ -255,7 +255,7 @@ pub(crate) enum PillBarActionKind {
 /// action variants again.
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum PillSwitchOutcome {
+pub enum PillSwitchOutcome {
     /// Pill click navigated within the current pane.
     SwitchedInPlace,
     /// Target conversation was already owned by another visible
@@ -264,7 +264,7 @@ pub(crate) enum PillSwitchOutcome {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct PillBarInteractionEvent {
+pub struct PillBarInteractionEvent {
     pub action: PillBarActionKind,
     pub pill_kind: PillBarPillKind,
     pub total_pills: usize,
