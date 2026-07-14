@@ -1207,11 +1207,11 @@ fn run_agents_action_registers_a_card_that_blocks_only_while_awaiting_confirmati
         let card = run_agents_card_view(&app, &block, &action.id);
 
         // Still streaming / not yet queued: the card renders the fallback
-        // status and does not hide the input (PRODUCT 7).
+        // status and does not hide the input.
         assert!(app.read(|ctx| block.as_ref(ctx).active_blocking_child(ctx).is_none()));
 
         // Queued and awaiting confirmation: the card is the active blocker
-        // (PRODUCT 1).
+        //.
         action_model.update(&mut app, |model, ctx| {
             model.queue_pending_action_for_test(conversation_id, action.clone(), ctx);
         });
@@ -1221,7 +1221,7 @@ fn run_agents_action_registers_a_card_that_blocks_only_while_awaiting_confirmati
         assert_eq!(blocker.view.id(), card.id());
 
         // Reject through the card: the block maps it to manual cancellation
-        // and the blocker resolves, restoring the input (PRODUCT 5, 56).
+        // and the blocker resolves, restoring the input.
         app.update(|ctx| {
             ctx.dispatch_typed_action_for_view(
                 card.window_id(ctx),
@@ -1258,12 +1258,12 @@ fn only_the_front_of_queue_action_blocks_and_handoff_is_direct() {
         });
 
         // Pending requests behind the front blocker do not affect input
-        // visibility (PRODUCT 4).
+        // visibility.
         let blocker = app.read(|ctx| block.as_ref(ctx).active_blocking_child(ctx));
         assert_eq!(blocker.expect("front blocker").action_id, first.id);
 
         // Resolving the front blocker hands off directly to the next queued
-        // blocking interaction (PRODUCT 6).
+        // blocking interaction.
         let first_card = run_agents_card_view(&app, &block, &first.id);
         app.update(|ctx| {
             ctx.dispatch_typed_action_for_view(
