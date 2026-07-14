@@ -42,6 +42,7 @@ use crate::tui_code_block_view::{TuiCodeBlockPayload, TuiCodeBlockView, TuiCodeB
 use crate::tui_markdown::{
     render_formatted_table, render_formatted_text, TuiMarkdownBlockHooks, TuiMarkdownPalette,
 };
+use crate::tui_plan_view::{TuiPlanView, TuiPlanViewEvent};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct TuiCodeBlockKey {
@@ -154,6 +155,7 @@ impl CollapsibleSectionStates {
 /// when it needs owned state or interactivity.
 enum TuiToolCallView {
     FileEdits(ViewHandle<TuiFileEditsView>),
+    Plan(ViewHandle<TuiPlanView>),
     ShellCommand(ViewHandle<TuiShellCommandView>),
 }
 
@@ -162,6 +164,7 @@ impl TuiToolCallView {
     fn view_id(&self) -> EntityId {
         match self {
             Self::FileEdits(view) => view.id(),
+            Self::Plan(view) => view.id(),
             Self::ShellCommand(view) => view.id(),
         }
     }
@@ -170,6 +173,7 @@ impl TuiToolCallView {
     fn render_child(&self) -> TuiChildView {
         match self {
             Self::FileEdits(view) => TuiChildView::new(view),
+            Self::Plan(view) => TuiChildView::new(view),
             Self::ShellCommand(view) => TuiChildView::new(view),
         }
     }
@@ -306,6 +310,7 @@ impl TuiAIBlock {
         let status = self.block_model.status(ctx);
         let output_streaming = status.is_streaming();
         let mut file_edit_action_ids = Vec::new();
+        let mut plan_actions = Vec::new();
         let mut shell_command_actions = Vec::new();
         if let Some(output) = status.output_to_render() {
             for message in &output.get().messages {
@@ -319,6 +324,11 @@ impl TuiAIBlock {
                 self.action_ids.insert(action.id.clone());
                 if matches!(&action.action, AIAgentActionType::RequestFileEdits { .. }) {
                     file_edit_action_ids.push(action.id.clone());
+                } else if matches!(
+                    &action.action,
+                    AIAgentActionType::CreateDocuments(_) | AIAgentActionType::EditDocuments(_)
+                ) {
+                    plan_actions.push(action.clone());
                 } else if matches!(
                     &action.action,
                     AIAgentActionType::RequestCommandOutput { .. }
@@ -341,6 +351,25 @@ impl TuiAIBlock {
             });
             self.action_views
                 .insert(action_id, TuiToolCallView::FileEdits(view));
+            ctx.notify();
+        }
+
+        for action in plan_actions {
+            if let Some(TuiToolCallView::Plan(view)) = self.action_views.get(&action.id) {
+                view.update(ctx, |view, ctx| {
+                    view.sync_action(action, output_streaming, ctx);
+                });
+                continue;
+            }
+            let action_id = action.id.clone();
+            let view = ctx.add_typed_action_tui_view(|ctx| {
+                TuiPlanView::new(action, output_streaming, action_model, ctx)
+            });
+            ctx.subscribe_to_view(&view, |me, _, event, ctx| match event {
+                TuiPlanViewEvent::LayoutChanged => me.invalidate_layout(ctx),
+            });
+            self.action_views
+                .insert(action_id, TuiToolCallView::Plan(view));
             ctx.notify();
         }
 
@@ -517,7 +546,7 @@ impl TuiAIBlock {
         self.last_measured_width.get() != Some(width)
             || self.block_model.status(app).is_streaming()
             || self.action_views.values().any(|view| match view {
-                TuiToolCallView::FileEdits(_) => false,
+                TuiToolCallView::FileEdits(_) | TuiToolCallView::Plan(_) => false,
                 TuiToolCallView::ShellCommand(view) => {
                     view.as_ref(app).needs_continuous_height_measurement()
                 }
@@ -768,6 +797,16 @@ impl TuiAIBlock {
                 // Stateful tool calls render their registered child view; every
                 // other tool call stays a pure render fn.
                 TuiAIBlockSection::ToolCall(action) => match self.action_views.get(&action.id) {
+                    Some(TuiToolCallView::Plan(view)) if !view.as_ref(app).renders_rich_body() => {
+                        let status = self.action_model.as_ref(app).get_action_status(&action.id);
+                        render_fallback_tool_call_section(
+                            action,
+                            status.as_ref(),
+                            output_streaming,
+                            None,
+                            app,
+                        )
+                    }
                     Some(view) => TuiContainer::new(Box::new(view.render_child())).finish(),
                     None => {
                         let status = self.action_model.as_ref(app).get_action_status(&action.id);
