@@ -19,12 +19,13 @@
 //! would otherwise match everywhere and, for multi-keystroke chords, swallow
 //! prefix keys via a pending match.
 
+use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{
     BindingLens, ContextPredicate, EditableBinding, IsBindingValid, Trigger,
 };
 use warpui_core::{Action, AppContext};
 
-use crate::editor_view::TuiEditorView;
+use crate::editor_view::{TuiEditorView, TuiEditorViewAction};
 use crate::input::TuiInputView;
 use crate::root_view::RootTuiView;
 use crate::terminal_session_view::TuiTerminalSessionView;
@@ -223,7 +224,12 @@ pub(crate) fn init(app: &mut AppContext) {
     crate::root_view::init(app);
     crate::terminal_session_view::init(app);
     crate::input::init(app);
-    crate::editor_view::init(app);
+    register_shared_editor_bindings(
+        app,
+        TuiEditorBindingTarget::Editor,
+        id!("TuiEditorView"),
+        TuiEditorViewAction::Command,
+    );
 
     register_binding_validators(app);
 }

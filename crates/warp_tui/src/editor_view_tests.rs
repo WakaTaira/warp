@@ -70,12 +70,9 @@ fn focus_hooks_update_editor_focus_without_changing_text() {
 }
 
 #[test]
-fn shared_initializer_registers_line_start_for_input_and_editor() {
+fn keybinding_initializer_registers_line_start_for_input_and_editor() {
     App::test((), |mut app| async move {
-        app.update(|ctx| {
-            crate::input::init(ctx);
-            super::init(ctx);
-        });
+        app.update(crate::keybindings::init);
 
         let triggers_for = |name: &str| {
             app.read(|ctx| {

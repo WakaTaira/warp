@@ -9,7 +9,6 @@ use warp_editor::model::{CoreEditorModel, PlainTextEditorModel};
 use warp_editor::selection::{TextDirection, TextUnit};
 use warpui_core::elements::tui::{TuiElement, TuiHoverable};
 use warpui_core::elements::MouseStateHandle;
-use warpui_core::keymap::macros::*;
 use warpui_core::text::word_boundaries::WordBoundariesPolicy;
 use warpui_core::{
     AppContext, BlurContext, Entity, FocusContext, ModelHandle, TuiView, TypedActionView,
@@ -17,19 +16,7 @@ use warpui_core::{
 };
 
 use crate::editor_element::{TuiEditorAction, TuiEditorElement};
-use crate::keybindings::{
-    register_shared_editor_bindings, TuiEditorBindingTarget, TuiEditorCommand,
-};
-
-/// Registers shared single-line editor bindings.
-pub(crate) fn init(app: &mut AppContext) {
-    register_shared_editor_bindings(
-        app,
-        TuiEditorBindingTarget::Editor,
-        id!("TuiEditorView"),
-        TuiEditorViewAction::Command,
-    );
-}
+use crate::keybindings::TuiEditorCommand;
 
 /// Events emitted when the editor content changes.
 #[derive(Clone, Debug, PartialEq, Eq)]

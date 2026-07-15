@@ -35,10 +35,12 @@ A `TuiView` + `TypedActionView` (`TuiOptionSelector`) rendering one page:
   `page.searchable` is true, then renders its pinned `Search:` row between the prompt
   and scroll viewport. Search is not a `SelectorItem`; the list starts focused on
   `selected_id` (or its first item) so digits remain immediate shortcuts. Up from the
-  top item focuses search, Down from search returns to the first filtered item, and
-  typing a non-digit from the list focuses and seeds search. Filtering is
-  case-insensitive substring matching over row labels; an empty result renders
-  `No matches`. The pinned search editor remains visible while rows scroll.
+  top item focuses search, Down from search returns to the first filtered item,
+  Up from search selects the last filtered item, and Down from the last item
+  focuses search. Typing a non-digit from the list focuses and seeds search.
+  Filtering is case-insensitive substring matching over row labels; an empty
+  result renders `No matches`. The pinned search editor remains visible while
+  rows scroll.
 - Status rows appended after the list per `OptionSourceStatus`: `Loading…` (dim),
   `Failed { message }` (error style, plus a selectable `↻ Retry` virtual row that
   emits `RetryRequested`), and `Empty { message }` (dim). Status rows are not
@@ -46,7 +48,7 @@ A `TuiView` + `TypedActionView` (`TuiOptionSelector`) rendering one page:
 - Footer: `OptionFooter::CustomText { label }` appends a selectable entry that, when
   confirmed, embeds a one-line `TuiEditorView` in place of the entry.
   Submitting a value replaces the generic footer label with that value, keeps the
-  footer highlighted, and pre-fills the value when it is edited again. A selected id
+  footer selected, and pre-fills the value when it is edited again. A selected id
   not present in the fixed rows restores this custom value when a page is rebuilt.
   `OptionFooter::CreateNewAuthSecret` is ignored (resource creation is out of scope
   in the TUI).
@@ -54,12 +56,12 @@ A `TuiView` + `TypedActionView` (`TuiOptionSelector`) rendering one page:
 State/API surface for the embedding host:
 
 - `new(ctx)` then `set_page(page, ctx)` — atomically replaces the page configuration,
-  resets the search query and highlight to the snapshot's `selected_id` (falling back
+  resets the search query and selection to the snapshot's `selected_id` (falling back
   to the first item), and discards any in-progress custom-text editing.
 - `refresh_snapshot(snapshot, ctx)` — in-place catalog refresh preserving the
-  highlighted row when it still exists, else falling back to `selected_id`.
-- `confirm_highlighted(ctx)` — the host's Enter path: enabled rows emit
-  `TuiOptionSelectorEvent::Confirmed { id }`; disabled rows stay highlighted so their
+  active selection when it still exists, else falling back to `selected_id`.
+- `confirm_selected(ctx)` — the host's Enter path: enabled rows emit
+  `TuiOptionSelectorEvent::Confirmed { id }`; disabled rows stay selected so their
   reason remains visible; while the custom-text editor is active it validates
   (trimmed, non-empty — else an inline "Enter a value to continue." error) and emits
   `CustomTextSubmitted { value }`. While search owns focus, Enter confirms the first
@@ -79,14 +81,16 @@ while the selector is rendered as the blocking interaction):
 - The list and embedded editors are real focus zones. `set_page` focuses the selector;
   boundary arrows move focus between the selector and search editor. Card keybindings
   continue to resolve through the editor's ancestor responder chain.
-- Up/Down move the highlight, scrolling to keep it visible; Up from the top row focuses
-  search and Down from search restores the first filtered row.
+- Up/Down move the selection, scrolling to keep it visible. Search behaves as
+  the final item in the cycle: Up from the first row focuses search, Up from
+  search selects the last row, Down from the last row focuses search, and Down
+  from search selects the first row.
 - Digits 1-9 confirm the corresponding visible row — viewport-relative, so digit 1 is
   always the top visible row after scrolling. While search owns focus, digits are
   editor input instead.
-- Row clicks confirm (or highlight, when disabled) via per-item persistent
+- Row clicks select the row and confirm it when enabled via per-item persistent
   `MouseStateHandle`s (owned by the view, per the mouse-state ownership rule).
-- Wheel scrolling moves the viewport without moving the highlight.
+- Wheel scrolling moves the viewport without moving the selection.
 - Search and custom text use the shared `TuiEditorView`; printable characters, cursor,
   selection, paste, and model-backed editing come from `CodeEditorModel` and
   `TuiEditorElement`. Single-line paste inserts only its first line. Escape remains
@@ -162,15 +166,15 @@ until the card slice; that slice removes the allow.
 ## Testing and validation
 
 - `crates/warp_tui/src/option_selector_tests.rs` covers: field label/position/prompt
-  rendering and initial highlight from `selected_id`; Up/Down + Enter confirmation;
+  rendering and initial selection from `selected_id`; Up/Down + Enter confirmation;
   digit confirmation, including viewport-relative digits in scrolled lists; scrolling
-  to keep the highlight visible with overflow markers; disabled rows being
-  highlightable but not confirmable via Enter, digit, or click; Loading/Empty status
+  to keep the selection visible with overflow markers; disabled rows being
+  selectable but not confirmable via Enter, digit, or click; Loading/Empty status
   rows being non-selectable; the Failed state's keyboard-reachable Retry row;
   custom-text trim/validate/submit, submitted-value rendering/re-editing/restoration,
   and Backspace; Back cancelling custom-text editing before leaving the page; the
   ignored `CreateNewAuthSecret` footer; snapshot-refresh
-  highlight preservation and selected-value fallback; lazy search-editor creation;
+  selection preservation and selected-value fallback; lazy search-editor creation;
   `LayoutInvalidated` emission when overflow markers or custom-text validation change
   rendered height; badge rendering;
   and paste falling through from the list while the custom-text editor consumes it

@@ -1,12 +1,12 @@
 //! [`TuiOptionSelector`]: a reusable single-select option list for TUI
 //! permission prompts, rendered from a frontend-neutral
 //! [`OptionSnapshot`]. One configuration page shows a header (title,
-//! "n of m" position, question), a highlightable option list with viewport
+//! "n of m" position, question), a selectable option list with viewport
 //! scrolling, optional Loading/Failed/Empty status rows, and an optional
 //! custom-text footer editor.
 //!
 //! Enter/Escape are owned by the embedding card's keymap bindings and arrive
-//! through [`TuiOptionSelector::confirm_highlighted`] /
+//! through [`TuiOptionSelector::confirm_selected`] /
 //! [`TuiOptionSelector::handle_back`]; arrows, viewport-relative digits,
 //! printable characters, clicks, and wheel scrolling are handled at the
 //! element level since the selector is only rendered while its card is the
@@ -79,9 +79,10 @@ pub(crate) enum TuiOptionSelectorEvent {
     /// The selector asked to be dismissed (element-level Escape fallback for
     /// hosts without their own Escape binding).
     Dismissed,
-    /// The selector's intrinsic height changed. `ctx.notify()` refreshes this
-    /// child view, while this event lets a host invalidate a separately cached
-    /// measurement of the containing card.
+    /// The selector's intrinsic height changed. `ctx.notify()` rerenders this
+    /// view, but the block list may reuse a stable-width cached rich-content
+    /// height. The host forwards this event so the containing rich-content
+    /// item is marked dirty and remeasured.
     LayoutInvalidated,
 }
 
@@ -90,13 +91,12 @@ pub(crate) enum TuiOptionSelectorEvent {
 pub(crate) enum TuiOptionSelectorAction {
     MoveUp,
     MoveDown,
-    /// Confirm (or highlight, when disabled) the item at a viewport-relative
-    /// digit position 1-9.
+    /// Select the viewport-relative item and confirm it when enabled.
     SelectNumberedOption(u8),
-    /// Confirm (or highlight, when disabled) the item at an absolute index;
-    /// dispatched by row clicks.
+    /// Select the item at an absolute index and confirm it when enabled.
+    /// Dispatched by row clicks.
     SelectItem(usize),
-    /// Scroll the viewport by whole rows without moving the highlight.
+    /// Scroll the viewport by whole rows without moving the selection.
     ScrollBy(isize),
     /// Move focus from the option list to search and seed its query.
     FocusSearchAndInsert(char),
@@ -184,14 +184,29 @@ impl TuiOptionSelector {
             .as_ref()
             .is_some_and(|field| field.as_ref(ctx).is_focused())
     }
+    /// Restores a custom selection encoded as an id outside the fixed rows.
+    fn sync_custom_text_selection_from_snapshot(&mut self) {
+        let snapshot = &self.page.snapshot;
+        self.custom_text_value = match (&snapshot.footer, &snapshot.selected_id) {
+            (Some(OptionFooter::CustomText { .. }), Some(selected_id))
+                if !snapshot.rows.iter().any(|row| row.id == *selected_id) =>
+            {
+                Some(selected_id.clone())
+            }
+            (
+                Some(OptionFooter::CustomText { .. } | OptionFooter::CreateNewAuthSecret) | None,
+                Some(_) | None,
+            ) => None,
+        };
+    }
 
     /// Replaces the current page and resets its transient interaction state.
     pub(crate) fn set_page(&mut self, page: OptionSelectorPage, ctx: &mut ViewContext<Self>) {
         if page.searchable && self.search_field.is_none() {
             self.search_field = Some(Self::add_search_field(ctx));
         }
-        self.custom_text_value = custom_text_value(&page.snapshot);
         self.page = page;
+        self.sync_custom_text_selection_from_snapshot();
         self.search_query.clear();
         if let Some(search_field) = self.search_field.as_ref() {
             search_field.update(ctx, |editor, ctx| editor.set_text("", ctx));
@@ -202,41 +217,35 @@ impl TuiOptionSelector {
         self.custom_text_active = false;
         self.custom_text_error_visible = false;
         self.selection.clear();
-        self.highlight_id(self.page.snapshot.selected_id.clone());
+        self.select_id(self.page.snapshot.selected_id.clone());
         self.sync_after_items_changed();
         ctx.focus_self();
         ctx.notify();
     }
 
     /// Refreshes the snapshot in place after a live catalog change,
-    /// preserving the highlighted row when it still exists and falling back
-    /// to the snapshot's selected value otherwise.
+    /// preserving the active selection when it still exists and falling back
+    /// to the snapshot's committed selection otherwise.
     pub(crate) fn refresh_snapshot(
         &mut self,
         snapshot: OptionSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
-        let highlighted = self.highlighted_row_id();
-        self.custom_text_value = custom_text_value(&snapshot);
+        let selected = self.selected_row_id();
         self.page.snapshot = snapshot;
-        let target = highlighted
+        self.sync_custom_text_selection_from_snapshot();
+        let target = selected
             .filter(|id| self.page.snapshot.rows.iter().any(|row| &row.id == id))
             .or_else(|| self.page.snapshot.selected_id.clone());
         if self.search_field_is_focused(ctx) {
             self.selection.clear();
         } else {
-            self.highlight_id(target);
+            self.select_id(target);
         }
         self.sync_after_items_changed();
         // A refreshed catalog can change the row count and thus the height.
         ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
         ctx.notify();
-    }
-
-    /// Whether the custom-text footer editor is currently active.
-    #[cfg(test)]
-    fn is_editing_custom_text(&self) -> bool {
-        self.custom_text_active
     }
 
     /// Scrolls to keep `selected` visible, announcing the scroll change (it
@@ -259,12 +268,12 @@ impl TuiOptionSelector {
         }
     }
 
-    /// Confirms the highlighted item (Enter): enabled rows emit
+    /// Confirms the selected item (Enter): enabled rows emit
     /// [`TuiOptionSelectorEvent::Confirmed`]; disabled rows are kept
-    /// highlighted so their reason stays visible. While the
+    /// selected so their reason stays visible. While the
     /// custom-text editor is active, Enter validates and submits it instead
     ///.
-    pub(crate) fn confirm_highlighted(&mut self, ctx: &mut ViewContext<Self>) {
+    pub(crate) fn confirm_selected(&mut self, ctx: &mut ViewContext<Self>) {
         if self.custom_text_active {
             self.submit_custom_text(ctx);
             return;
@@ -335,7 +344,7 @@ impl TuiOptionSelector {
         items
     }
 
-    /// Whether the item can be confirmed. Disabled rows stay highlightable
+    /// Whether the item can be confirmed. Disabled rows stay selectable
     /// but unconfirmable.
     fn item_is_confirmable(&self, item: SelectorItem) -> bool {
         match item {
@@ -349,8 +358,8 @@ impl TuiOptionSelector {
         }
     }
 
-    /// The row id currently highlighted, when the highlight is on a row.
-    fn highlighted_row_id(&self) -> Option<String> {
+    /// The row id currently selected, when the selection is on a row.
+    fn selected_row_id(&self) -> Option<String> {
         let items = self.items();
         match self.selection.selected_index().and_then(|i| items.get(i)) {
             Some(SelectorItem::Row(index)) => self
@@ -363,8 +372,8 @@ impl TuiOptionSelector {
         }
     }
 
-    /// Moves the highlight to the row with `id`, else the first item.
-    fn highlight_id(&mut self, id: Option<String>) {
+    /// Moves the selection to the row with `id`, else the first item.
+    fn select_id(&mut self, id: Option<String>) {
         let items = self.items();
         let target = id
             .and_then(|id| {
@@ -406,25 +415,26 @@ impl TuiOptionSelector {
         }
     }
 
-    /// Moves the highlight one step, scrolling to keep it visible.
-    fn move_highlight(&mut self, forward: bool, ctx: &mut ViewContext<Self>) {
+    /// Moves the selection one step, scrolling to keep it visible.
+    fn move_selection(&mut self, forward: bool, ctx: &mut ViewContext<Self>) {
         let items_len = self.items().len();
         if self.search_field_is_focused(ctx) {
-            if forward && items_len > 0 {
-                self.selection.select(0, items_len, |_| true);
+            if items_len > 0 {
+                let target = if forward { 0 } else { items_len - 1 };
+                self.selection.select(target, items_len, |_| true);
                 ctx.focus_self();
-                self.scroll_to_keep_visible(items_len, 0, ctx);
+                self.scroll_to_keep_visible(items_len, target, ctx);
             }
             ctx.notify();
             return;
         }
-        if !forward
-            && self.page.searchable
-            && self
-                .selection
-                .selected_index()
-                .is_none_or(|index| index == 0)
-        {
+        let move_to_search = self.page.searchable
+            && match (forward, self.selection.selected_index()) {
+                (false, None | Some(0)) => true,
+                (true, Some(index)) => index + 1 >= items_len,
+                (true, None) | (false, Some(_)) => false,
+            };
+        if move_to_search {
             self.selection.clear();
             self.scroll_offset = 0;
             if let Some(search_field) = self.search_field.as_ref() {
@@ -444,7 +454,7 @@ impl TuiOptionSelector {
         ctx.notify();
     }
 
-    /// Confirms the item at `index` when enabled; otherwise highlights it so
+    /// Confirms the item at `index` when enabled; otherwise selects it so
     /// its disabled reason is surfaced.
     fn confirm_item(&mut self, index: usize, ctx: &mut ViewContext<Self>) {
         let items = self.items();
@@ -507,7 +517,7 @@ impl TuiOptionSelector {
         ctx.notify();
     }
 
-    /// Scrolls the viewport by `rows` without moving the highlight
+    /// Scrolls the viewport by `rows` without moving the selection
     ///.
     fn scroll_by(&mut self, rows: isize, ctx: &mut ViewContext<Self>) {
         let items_len = self.items().len();
@@ -572,18 +582,18 @@ impl TuiOptionSelector {
         &self,
         row: &OptionRow,
         digit: Option<usize>,
-        is_highlighted: bool,
+        is_selected: bool,
         builder: &TuiUiBuilder,
     ) -> Box<dyn TuiElement> {
         let disabled = row.disabled_reason.is_some();
-        let label_style = if is_highlighted {
+        let label_style = if is_selected {
             builder.option_selector_selected_style()
         } else if disabled {
             builder.dim_text_style()
         } else {
             builder.primary_text_style()
         };
-        let detail_style = if is_highlighted {
+        let detail_style = if is_selected {
             builder.option_selector_selected_style()
         } else if disabled {
             builder.dim_text_style()
@@ -618,11 +628,11 @@ impl TuiOptionSelector {
         &self,
         text: String,
         digit: Option<usize>,
-        is_highlighted: bool,
+        is_selected: bool,
         style: TuiStyle,
         builder: &TuiUiBuilder,
     ) -> Box<dyn TuiElement> {
-        let style = if is_highlighted {
+        let style = if is_selected {
             builder.option_selector_selected_style()
         } else {
             style
@@ -697,19 +707,19 @@ impl TuiOptionSelector {
         for (position, index) in visible.clone().enumerate() {
             let item = items[index];
             let digit = (position < 9).then_some(position + 1);
-            let is_highlighted =
+            let is_selected =
                 !self.custom_text_active && self.selection.selected_index() == Some(index);
             let element = match item {
                 SelectorItem::Row(row_index) => {
                     let Some(row) = self.page.snapshot.rows.get(row_index) else {
                         continue;
                     };
-                    self.render_row(row, digit, is_highlighted, builder)
+                    self.render_row(row, digit, is_selected, builder)
                 }
                 SelectorItem::Retry => self.render_virtual_row(
                     "↻ Retry".to_string(),
                     digit,
-                    is_highlighted,
+                    is_selected,
                     builder.error_text_style(),
                     builder,
                 ),
@@ -733,7 +743,7 @@ impl TuiOptionSelector {
                                     .clone()
                                     .unwrap_or_else(|| label.clone()),
                                 digit,
-                                is_highlighted,
+                                is_selected,
                                 builder.primary_text_style(),
                                 builder,
                             ),
@@ -793,18 +803,6 @@ impl TuiOptionSelector {
     }
 }
 
-/// A custom-text selection is encoded as a selected id that is not one of
-/// the snapshot's fixed rows.
-fn custom_text_value(snapshot: &OptionSnapshot) -> Option<String> {
-    if !matches!(snapshot.footer, Some(OptionFooter::CustomText { .. })) {
-        return None;
-    }
-    snapshot
-        .selected_id
-        .as_ref()
-        .filter(|selected| !snapshot.rows.iter().any(|row| &row.id == *selected))
-        .cloned()
-}
 impl Entity for TuiOptionSelector {
     type Event = TuiOptionSelectorEvent;
 }
@@ -876,8 +874,8 @@ impl TuiView for TuiOptionSelector {
 impl TypedActionView for TuiOptionSelector {
     fn handle_action(&mut self, action: &TuiOptionSelectorAction, ctx: &mut ViewContext<Self>) {
         match action {
-            TuiOptionSelectorAction::MoveUp => self.move_highlight(false, ctx),
-            TuiOptionSelectorAction::MoveDown => self.move_highlight(true, ctx),
+            TuiOptionSelectorAction::MoveUp => self.move_selection(false, ctx),
+            TuiOptionSelectorAction::MoveDown => self.move_selection(true, ctx),
             TuiOptionSelectorAction::SelectNumberedOption(digit) => {
                 let index = self.scroll_offset + usize::from(*digit) - 1;
                 self.confirm_item(index, ctx);

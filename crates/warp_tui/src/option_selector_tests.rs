@@ -130,7 +130,7 @@ fn searchable_page_starts_on_the_selected_row_and_digits_still_confirm() {
             &selector,
             snapshot(&["auto", "gpt-5", "claude"], Some("gpt-5")),
         );
-        assert!(highlighted_line(&app, &selector).contains("(2) gpt-5"));
+        assert!(selected_line(&app, &selector).contains("(2) gpt-5"));
         assert!(render_lines(&app, &selector, 60)
             .iter()
             .any(|line| line.contains("Search:")));
@@ -170,10 +170,38 @@ fn up_from_top_focuses_search_and_down_returns_to_first_row() {
         assert!(app.read(|ctx| selector.as_ref(ctx).selection.selected_index().is_none()));
 
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
-        assert!(highlighted_line(&app, &selector).contains("(1) auto"));
+        assert!(selected_line(&app, &selector).contains("(1) auto"));
     });
 }
 
+#[test]
+fn search_and_last_option_wrap_in_both_directions() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        set_searchable_page(
+            &mut app,
+            &selector,
+            snapshot(&["auto", "gpt-5", "claude"], Some("auto")),
+        );
+
+        // Up from the first option focuses Search; another Up wraps to the
+        // last option.
+        act(&mut app, &selector, TuiOptionSelectorAction::MoveUp);
+        act(&mut app, &selector, TuiOptionSelectorAction::MoveUp);
+        assert!(selected_line(&app, &selector).contains("(3) claude"));
+
+        // Down from the last option returns to Search.
+        act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
+        assert!(app.read(|ctx| selector
+            .as_ref(ctx)
+            .search_field
+            .as_ref()
+            .expect("searchable page has an editor")
+            .as_ref(ctx)
+            .is_focused()));
+        assert!(app.read(|ctx| selector.as_ref(ctx).selection.selected_index().is_none()));
+    });
+}
 #[test]
 fn focused_search_filters_including_digits_and_enter_confirms_top_match() {
     App::test((), |mut app| async move {
@@ -287,8 +315,15 @@ fn edit_custom_text(
     selector: &ViewHandle<TuiOptionSelector>,
     action: TuiEditorViewAction,
 ) {
-    let field = selector.read(app, |selector, _| selector.custom_text_field.clone());
+    let field = custom_text_field(app, selector);
     field.update(app, |field, ctx| field.handle_action(&action, ctx));
+}
+/// Returns the selector's custom-text editor for focus and action assertions.
+fn custom_text_field(
+    app: &App,
+    selector: &ViewHandle<TuiOptionSelector>,
+) -> ViewHandle<crate::editor_view::TuiEditorView> {
+    selector.read(app, |selector, _| selector.custom_text_field.clone())
 }
 
 /// Applies a shared editor action to the search child.
@@ -315,7 +350,7 @@ fn set_page_recovers_a_selected_custom_text_value() {
 
         set_page(&mut app, &selector, with_custom_selection);
 
-        let line = highlighted_line(&app, &selector);
+        let line = selected_line(&app, &selector);
         assert!(line.contains("my-host"));
         assert!(!line.contains("Custom host…"));
     });
@@ -326,9 +361,9 @@ fn act(app: &mut App, selector: &ViewHandle<TuiOptionSelector>, action: TuiOptio
     selector.update(app, |selector, ctx| selector.handle_action(&action, ctx));
 }
 
-/// Confirms the highlighted item (the card's Enter path).
+/// Confirms the selected item (the card's Enter path).
 fn confirm(app: &mut App, selector: &ViewHandle<TuiOptionSelector>) {
-    selector.update(app, |selector, ctx| selector.confirm_highlighted(ctx));
+    selector.update(app, |selector, ctx| selector.confirm_selected(ctx));
 }
 
 /// Lays out the selector's element at `width`, returning it with its area.
@@ -383,14 +418,14 @@ fn render_lines(app: &App, selector: &ViewHandle<TuiOptionSelector>, width: u16)
         .collect()
 }
 
-/// The rendered line for the selector's highlighted item.
-fn highlighted_line(app: &App, selector: &ViewHandle<TuiOptionSelector>) -> String {
+/// The rendered line for the selector's selected item.
+fn selected_line(app: &App, selector: &ViewHandle<TuiOptionSelector>) -> String {
     let needle = app.read(|app| {
         let selector = selector.as_ref(app);
         let index = selector
             .selection
             .selected_index()
-            .expect("a highlighted item");
+            .expect("a selected item");
         let digit = index - selector.scroll_offset + 1;
         let label = match selector.items()[index] {
             SelectorItem::Row(row_index) => selector.page.snapshot.rows[row_index].label.clone(),
@@ -409,11 +444,11 @@ fn highlighted_line(app: &App, selector: &ViewHandle<TuiOptionSelector>) -> Stri
     render_lines(app, selector, 60)
         .into_iter()
         .find(|line| line.contains(&needle))
-        .expect("a highlighted row")
+        .expect("a selected row")
 }
 
 #[test]
-fn renders_field_label_position_prompt_and_initial_highlight() {
+fn renders_field_label_position_prompt_and_initial_selection() {
     App::test((), |mut app| async move {
         let (selector, _) = add_selector(&mut app);
         set_page(&mut app, &selector, snapshot(&["a", "b", "c"], Some("b")));
@@ -426,10 +461,10 @@ fn renders_field_label_position_prompt_and_initial_highlight() {
         assert!(lines[0].ends_with("← 4 of 6 →"));
         assert!(lines[1].is_empty());
         assert!(lines[2].contains("Which host should run the agents?"));
-        // The highlight starts on the snapshot's current value.
-        let highlighted = highlighted_line(&app, &selector);
-        assert!(highlighted.contains("(2) b"));
-        assert!(!highlighted.contains('❯'));
+        // The selection starts on the snapshot's current value.
+        let selected = selected_line(&app, &selector);
+        assert!(selected.contains("(2) b"));
+        assert!(!selected.contains('❯'));
 
         let buffer = render_buffer(&app, &selector, 60);
         let builder = app.read(TuiUiBuilder::from_app);
@@ -446,14 +481,14 @@ fn renders_field_label_position_prompt_and_initial_highlight() {
 }
 
 #[test]
-fn up_and_down_move_the_highlight_and_enter_confirms_it() {
+fn up_and_down_move_the_selection_and_enter_confirms_it() {
     App::test((), |mut app| async move {
         let (selector, events) = add_selector(&mut app);
         set_page(&mut app, &selector, snapshot(&["a", "b", "c"], Some("a")));
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
-        assert!(highlighted_line(&app, &selector).contains('b'));
+        assert!(selected_line(&app, &selector).contains('b'));
         act(&mut app, &selector, TuiOptionSelectorAction::MoveUp);
-        assert!(highlighted_line(&app, &selector).contains('a'));
+        assert!(selected_line(&app, &selector).contains('a'));
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         confirm(&mut app, &selector);
         assert_eq!(
@@ -512,7 +547,7 @@ fn digits_are_viewport_relative_in_scrolled_lists() {
 }
 
 #[test]
-fn navigation_scrolls_to_keep_the_highlight_visible() {
+fn navigation_scrolls_to_keep_the_selection_visible() {
     App::test((), |mut app| async move {
         let (selector, _) = add_selector(&mut app);
         let ids: Vec<String> = (0..12).map(|i| format!("row-{i}")).collect();
@@ -521,8 +556,8 @@ fn navigation_scrolls_to_keep_the_highlight_visible() {
         for _ in 0..9 {
             act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         }
-        // The highlight scrolled beyond the first viewport.
-        assert!(highlighted_line(&app, &selector).contains("row-9"));
+        // The selection scrolled beyond the first viewport.
+        assert!(selected_line(&app, &selector).contains("row-9"));
         assert!(render_lines(&app, &selector, 60)
             .iter()
             .any(|line| line.trim() == "↑"));
@@ -551,7 +586,7 @@ fn list_viewport_shows_six_rows_and_arrow_overflow_markers() {
 }
 
 #[test]
-fn disabled_rows_are_highlightable_but_not_confirmable() {
+fn disabled_rows_are_selectable_but_not_confirmable() {
     App::test((), |mut app| async move {
         let (selector, events) = add_selector(&mut app);
         set_page(
@@ -565,10 +600,10 @@ fn disabled_rows_are_highlightable_but_not_confirmable() {
                 Some("a"),
             ),
         );
-        // The disabled row can be highlighted and shows its reason
+        // The disabled row can be selected and shows its reason
         // …
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
-        let line = highlighted_line(&app, &selector);
+        let line = selected_line(&app, &selector);
         assert!(line.contains('b'));
         assert!(line.contains("Disabled by your administrator"));
         // … but neither Enter, its digit, nor a click confirms it.
@@ -646,7 +681,7 @@ fn custom_text_editor_trims_validates_and_submits() {
             .iter()
             .any(|line| line.contains("Custom host…")));
         act(&mut app, &selector, TuiOptionSelectorAction::SelectItem(1));
-        assert!(app.read(|app| selector.as_ref(app).is_editing_custom_text()));
+        assert!(custom_text_field(&app, &selector).read(&app, |field, _| field.is_focused()));
 
         // Whitespace-only input stays editable with a concise error
         //.
@@ -681,8 +716,8 @@ fn custom_text_editor_trims_validates_and_submits() {
                 value: "my-host".to_string()
             }],
         );
-        assert!(app.read(|app| !selector.as_ref(app).is_editing_custom_text()));
-        let line = highlighted_line(&app, &selector);
+        assert!(!custom_text_field(&app, &selector).read(&app, |field, _| field.is_focused()));
+        let line = selected_line(&app, &selector);
         assert!(line.contains("my-host"));
         assert!(!line.contains("Custom host…"));
 
@@ -704,11 +739,11 @@ fn back_cancels_custom_text_editing_before_leaving_the_page() {
         });
         set_page(&mut app, &selector, with_footer);
         act(&mut app, &selector, TuiOptionSelectorAction::SelectItem(1));
-        assert!(app.read(|app| selector.as_ref(app).is_editing_custom_text()));
+        assert!(custom_text_field(&app, &selector).read(&app, |field, _| field.is_focused()));
         // The first Back unwinds editing and is consumed; the next one isn't.
         let consumed = selector.update(&mut app, |selector, ctx| selector.handle_back(ctx));
         assert!(consumed);
-        assert!(app.read(|app| !selector.as_ref(app).is_editing_custom_text()));
+        assert!(!custom_text_field(&app, &selector).read(&app, |field, _| field.is_focused()));
         let consumed = selector.update(&mut app, |selector, ctx| selector.handle_back(ctx));
         assert!(!consumed);
     });
@@ -793,13 +828,13 @@ fn layout_invalidated_is_emitted_when_the_custom_text_error_row_toggles() {
 }
 
 #[test]
-fn snapshot_refresh_preserves_the_highlighted_row() {
+fn snapshot_refresh_preserves_the_selected_row() {
     App::test((), |mut app| async move {
         let (selector, events) = add_selector(&mut app);
         set_page(&mut app, &selector, snapshot(&["a", "b", "c"], Some("a")));
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
-        // The highlighted row survives a catalog refresh that reorders rows
+        // The selected row survives a catalog refresh that reorders rows
         //.
         selector.update(&mut app, |selector, ctx| {
             selector.refresh_snapshot(snapshot(&["c", "a"], Some("a")), ctx);
@@ -815,12 +850,12 @@ fn snapshot_refresh_preserves_the_highlighted_row() {
 }
 
 #[test]
-fn snapshot_refresh_falls_back_to_the_selected_value_when_the_highlight_vanishes() {
+fn snapshot_refresh_falls_back_to_the_selected_value_when_the_selection_vanishes() {
     App::test((), |mut app| async move {
         let (selector, events) = add_selector(&mut app);
         set_page(&mut app, &selector, snapshot(&["a", "b"], Some("a")));
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
-        // "b" disappears from the catalog; the highlight falls back to the
+        // "b" disappears from the catalog; the selection falls back to the
         // snapshot's current value rather than silently confirming anything
         //.
         selector.update(&mut app, |selector, ctx| {
@@ -875,7 +910,7 @@ fn paste_is_consumed_only_while_editing_custom_text() {
         assert!(!dispatch(&app, &selector, &paste));
 
         act(&mut app, &selector, TuiOptionSelectorAction::SelectItem(1));
-        assert!(app.read(|app| selector.as_ref(app).is_editing_custom_text()));
+        assert!(custom_text_field(&app, &selector).read(&app, |field, _| field.is_focused()));
         // The editor consumes the paste (only the first line's printable
         // characters are inserted; the editor is single-line).
         assert!(dispatch(&app, &selector, &paste));
