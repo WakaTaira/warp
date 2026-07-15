@@ -7,9 +7,13 @@
 //! input straight to the PTY as escape sequences — mirroring the GUI's
 //! `AltScreenElement` (`app/src/terminal/alt_screen/alt_screen_element.rs`).
 //!
-//! Covers rendering, the cursor, and keyboard and SGR mouse forwarding. PTY
-//! sizing is handled by the session view's `TuiTerminalSizeElement` wrapper,
-//! which publishes this element's laid-out dimensions after every layout.
+//! Covers rendering, the cursor, and keyboard and SGR mouse forwarding. Mouse
+//! forwarding is gated by the same policy the GUI uses
+//! (`should_intercept_mouse` / `should_intercept_scroll`), so terminal modes,
+//! reporting settings, and shared-session state behave identically across
+//! front-ends. PTY sizing is handled by the session view's
+//! `TuiTerminalSizeElement` wrapper, which publishes this element's laid-out
+//! dimensions after every layout.
 //!
 //! [`TuiTerminalSessionView`]: crate::terminal_session_view::TuiTerminalSessionView
 //! [`TerminalModel::is_alt_screen_active`]: warp::tui_export::TerminalModel
@@ -18,14 +22,17 @@ use std::ops::Deref as _;
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
-use warp::tui_export::{KeystrokeWithDetails, TermMode, TerminalModel, ToEscapeSequence as _};
+use warp::tui_export::{
+    should_intercept_mouse, should_intercept_scroll, KeystrokeWithDetails, TermMode, TerminalModel,
+    ToEscapeSequence as _,
+};
 use warp_terminal::model::escape_sequences::{alt_screen_scroll_to_pty_bytes, ModeProvider};
 use warp_terminal::model::grid::Dimensions as _;
 use warp_terminal::model::mouse::{MouseAction, MouseButton, MouseState};
 use warp_terminal::model::Point;
 use warpui_core::elements::tui::{
     TuiConstraint, TuiElement, TuiEvent, TuiEventContext, TuiLayoutContext, TuiPaintContext,
-    TuiPaintSurface, TuiScreenPoint, TuiScreenPosition, TuiScreenRect, TuiSize,
+    TuiPaintSurface, TuiPoint, TuiScreenPoint, TuiScreenPosition, TuiScreenRect, TuiSize,
 };
 use warpui_core::AppContext;
 
@@ -50,40 +57,71 @@ impl AltScreenElement {
     }
 }
 
-/// Converts a supported pointer event into the terminal's SGR mouse model.
-fn mouse_state_for_event(
-    event: &TuiEvent,
-    bounds: TuiScreenRect,
-    is_mode_set: impl Fn(TermMode) -> bool,
-) -> Option<MouseState> {
-    if !is_mode_set(TermMode::SGR_MOUSE) {
-        return None;
+/// Which alt-screen mouse reports the active app and user settings allow.
+#[derive(Clone, Copy)]
+pub(crate) struct MouseReportPolicy {
+    /// Clicks, releases, and drags.
+    report_buttons: bool,
+    /// Hover motion.
+    report_motion: bool,
+    /// Wheel events as SGR reports (arrow-key fallback otherwise).
+    report_scroll: bool,
+}
+
+impl MouseReportPolicy {
+    /// Derives the policy from the same gating the GUI's `AltScreenElement`
+    /// applies: `should_intercept_*` for buttons and scroll (per-event shift
+    /// is checked at the call site), and `MOUSE_MOTION` for hover motion.
+    fn current(model: &TerminalModel, app: &AppContext) -> Self {
+        Self {
+            report_buttons: !should_intercept_mouse(model, false, app),
+            report_motion: model.is_term_mode_set(TermMode::MOUSE_MOTION),
+            report_scroll: !should_intercept_scroll(model, app),
+        }
     }
-    let reports_clicks = is_mode_set(TermMode::MOUSE_REPORT_CLICK);
-    let reports_drag = is_mode_set(TermMode::MOUSE_DRAG);
-    let reports_motion = is_mode_set(TermMode::MOUSE_MOTION);
-    let reports_clicks = reports_clicks || reports_drag || reports_motion;
-    let position = event.position()?;
+}
+
+/// Converts an in-bounds screen position to alt-screen grid coordinates.
+fn cell_point(position: TuiPoint, bounds: TuiScreenRect) -> Option<Point> {
     if !bounds.contains(position) {
         return None;
     }
-    let point = Point::new(
+    Some(Point::new(
         usize::try_from(i32::from(position.y) - bounds.origin.y).ok()?,
         usize::try_from(i32::from(position.x) - bounds.origin.x).ok()?,
-    );
+    ))
+}
 
+/// Encodes a supported pointer event for the active alt-screen application.
+fn mouse_event_to_pty_bytes<T: ModeProvider>(
+    event: &TuiEvent,
+    bounds: TuiScreenRect,
+    policy: MouseReportPolicy,
+    mode_provider: &T,
+) -> Option<Vec<u8>> {
+    let point = cell_point(event.position()?, bounds)?;
     let state = match event {
-        TuiEvent::LeftMouseDown { modifiers, .. } if reports_clicks && !modifiers.shift => {
+        TuiEvent::ScrollWheel {
+            delta: (_, rows), ..
+        } => {
+            return alt_screen_scroll_to_pty_bytes(
+                i32::try_from(*rows).ok()?,
+                point,
+                policy.report_scroll,
+                mode_provider,
+            );
+        }
+        TuiEvent::LeftMouseDown { modifiers, .. } if policy.report_buttons && !modifiers.shift => {
             MouseState::new(MouseButton::Left, MouseAction::Pressed, *modifiers)
         }
-        TuiEvent::RightMouseDown { modifiers, .. } if reports_clicks && !modifiers.shift => {
+        TuiEvent::RightMouseDown { modifiers, .. } if policy.report_buttons && !modifiers.shift => {
             MouseState::new(MouseButton::Right, MouseAction::Pressed, *modifiers)
         }
-        TuiEvent::LeftMouseUp { modifiers, .. } if reports_clicks && !modifiers.shift => {
+        TuiEvent::LeftMouseUp { modifiers, .. } if policy.report_buttons && !modifiers.shift => {
             MouseState::new(MouseButton::Left, MouseAction::Released, *modifiers)
         }
         TuiEvent::LeftMouseDragged { modifiers, .. }
-            if (reports_drag || reports_motion) && !modifiers.shift =>
+            if policy.report_buttons && !modifiers.shift =>
         {
             MouseState::new(MouseButton::LeftDrag, MouseAction::Pressed, *modifiers)
         }
@@ -91,42 +129,12 @@ fn mouse_state_for_event(
             modifiers,
             is_synthetic: false,
             ..
-        } if reports_motion => MouseState::new(MouseButton::Move, MouseAction::Pressed, *modifiers),
+        } if policy.report_motion => {
+            MouseState::new(MouseButton::Move, MouseAction::Pressed, *modifiers)
+        }
         _ => return None,
     };
-    Some(state.set_point(point))
-}
-
-/// Encodes a supported pointer event for the active alt-screen application.
-fn mouse_event_to_pty_bytes<T: ModeProvider>(
-    event: &TuiEvent,
-    bounds: TuiScreenRect,
-    is_mode_set: impl Fn(TermMode) -> bool,
-    mode_provider: &T,
-) -> Option<Vec<u8>> {
-    if let TuiEvent::ScrollWheel {
-        position,
-        delta: (_, rows),
-        ..
-    } = event
-    {
-        if !bounds.contains(*position) {
-            return None;
-        }
-        let point = Point::new(
-            usize::try_from(i32::from(position.y) - bounds.origin.y).ok()?,
-            usize::try_from(i32::from(position.x) - bounds.origin.x).ok()?,
-        );
-        return alt_screen_scroll_to_pty_bytes(
-            i32::try_from(*rows).ok()?,
-            point,
-            is_mode_set(TermMode::SGR_MOUSE),
-            mode_provider,
-        );
-    }
-
-    mouse_state_for_event(event, bounds, is_mode_set)
-        .and_then(|state| state.to_escape_sequence(mode_provider))
+    state.set_point(point).to_escape_sequence(mode_provider)
 }
 
 impl TuiElement for AltScreenElement {
@@ -190,7 +198,7 @@ impl TuiElement for AltScreenElement {
         &mut self,
         event: &TuiEvent,
         event_ctx: &mut TuiEventContext<'_>,
-        _app: &AppContext,
+        app: &AppContext,
     ) -> bool {
         // Forward the event to the app. Keys go through `to_pty_bytes`, which
         // layers the fallbacks a single-`KeyDown` frontend needs —
@@ -198,7 +206,7 @@ impl TuiElement for AltScreenElement {
         // top of the shared `to_escape_sequence` encoder in `warp_terminal`.
         // (ctrl-c never reaches here: the session view's interrupt handler
         // forwards it to the app.) Pointer events are translated to SGR mouse
-        // reports when the app opted in.
+        // reports when the GUI-shared reporting policy allows it.
         let bytes = {
             let model = self.model.lock();
             match event {
@@ -220,7 +228,7 @@ impl TuiElement for AltScreenElement {
                     mouse_event_to_pty_bytes(
                         event,
                         TuiScreenRect::new(origin, size),
-                        |mode| model.is_term_mode_set(mode),
+                        MouseReportPolicy::current(model.deref(), app),
                         model.deref(),
                     )
                 }),
