@@ -26,10 +26,11 @@ pub use crate::ai::agent::{
     AIAgentActionType, AIAgentContext, AIAgentExchangeId, AIAgentInput, AIAgentOutput,
     AIAgentOutputMessage, AIAgentOutputMessageType, AIAgentPtyWriteMode, AIAgentText,
     AIAgentTextSection, AIAgentTodo, AIAgentTodoId, AskUserQuestionResult, CancellationReason,
-    FileGlobV2Result, GrepResult, MessageId, RenderableAIError, RequestCommandOutputResult,
-    RunAgentsAgentOutcomeKind, RunAgentsResult, SearchCodebaseFailureReason, SearchCodebaseResult,
-    ServerOutputId, Shared, ShellCommandDelay, StartAgentExecutionMode,
-    SuggestNewConversationResult, SummarizationType, TodoOperation, UserQueryMode,
+    FileGlobV2Result, GrepResult, MessageId, ReceivedMessageDisplay, RenderableAIError,
+    RequestCommandOutputResult, RunAgentsAgentOutcomeKind, RunAgentsResult,
+    SearchCodebaseFailureReason, SearchCodebaseResult, ServerOutputId, Shared, ShellCommandDelay,
+    StartAgentExecutionMode, SuggestNewConversationResult, SummarizationType, TodoOperation,
+    UserQueryMode,
 };
 pub use crate::ai::agent_conversations_model::{
     query_conversation_entries, AgentConversationEntry, AgentConversationEntryId,

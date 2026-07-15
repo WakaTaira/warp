@@ -10,6 +10,7 @@
 mod agent_block;
 mod agent_block_sections;
 mod agent_identity;
+mod agent_message;
 mod alt_screen_view;
 mod autoupdate;
 mod clipboard;
@@ -37,6 +38,7 @@ mod run_agents_card_view;
 mod sessions;
 mod skills_menu;
 mod slash_commands;
+mod status;
 mod terminal_background;
 mod terminal_block;
 mod terminal_session_view;
