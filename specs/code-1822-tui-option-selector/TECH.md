@@ -117,7 +117,7 @@ shell-mode transitions and `!` chrome, prompt submission and contextual Escape,
 kill/yank state, and a six-row scrolling policy
 (`crates/warp_tui/src/input/view.rs` (335-985)). Reusing it for search or custom
 text would require unrelated prompt dependencies and would let prompt policy
-compete with selector-owned Enter, Escape, and Up/Down behavior.
+compete with selector-owned Enter/Up/Down behavior and host-routed Escape.
 
 The reusable boundary is therefore the existing `CodeEditorModel` +
 `TuiEditorElement`, wrapped by a small view that owns only focus, content events,
@@ -193,9 +193,10 @@ until the card slice; that slice removes the allow.
   of selector chrome.
 - Tests host the selector under `test_fixtures::TestHostView` in a headless TUI
   window and render to lines (see the `tui-testing` conventions).
-- Commands: `cargo check -p warp_tui`,
+- Commands: `./script/format`,
   `cargo nextest run -p warp_tui -E 'test(option_selector) or test(editor_view)'`,
-  plus `./script/format`.
+  `cargo nextest run -p warp_tui`, and
+  `cargo clippy -p warp_tui --tests -- -D warnings`.
 
 ## Follow-ups
 
