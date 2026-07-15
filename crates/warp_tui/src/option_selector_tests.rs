@@ -13,11 +13,12 @@ use warpui_core::elements::tui::{
 use warpui_core::{App, AppContext, TuiView as _, TypedActionView as _, ViewHandle};
 
 use super::{
-    OptionSelectorHeader, SelectorItem, TuiOptionSelector, TuiOptionSelectorAction,
+    OptionSelectorPage, SelectorItem, TuiOptionSelector, TuiOptionSelectorAction,
     TuiOptionSelectorEvent,
 };
 use crate::editor_element::TuiEditorAction;
-use crate::editor_view::{TuiEditorCommand, TuiEditorViewAction};
+use crate::editor_view::TuiEditorViewAction;
+use crate::keybindings::TuiEditorCommand;
 use crate::test_fixtures::TestHostView;
 use crate::tui_builder::TuiUiBuilder;
 
@@ -55,24 +56,26 @@ fn snapshot_of(rows: Vec<OptionRow>, selected: Option<&str>) -> OptionSnapshot {
     }
 }
 
-/// A page header used across tests.
-fn header() -> OptionSelectorHeader {
-    OptionSelectorHeader {
-        title: "Host".to_string(),
+/// Builds one selector page with shared test metadata.
+fn page(snapshot: OptionSnapshot, searchable: bool) -> OptionSelectorPage {
+    OptionSelectorPage {
+        field_label: "Host".to_string(),
         position: (4, 6),
-        question: "Which host should run the agents?".to_string(),
+        prompt: "Which host should run the agents?".to_string(),
+        snapshot,
+        searchable,
     }
 }
 
 type CapturedEvents = Rc<RefCell<Vec<TuiOptionSelectorEvent>>>;
 
-/// The captured events with `LayoutChanged` filtered out, for tests that
+/// The captured events with `LayoutInvalidated` filtered out, for tests that
 /// assert on the primary confirmation flow.
 fn primary_events(events: &CapturedEvents) -> Vec<TuiOptionSelectorEvent> {
     events
         .borrow()
         .iter()
-        .filter(|event| **event != TuiOptionSelectorEvent::LayoutChanged)
+        .filter(|event| **event != TuiOptionSelectorEvent::LayoutInvalidated)
         .cloned()
         .collect()
 }
@@ -103,7 +106,18 @@ fn add_selector(app: &mut App) -> (ViewHandle<TuiOptionSelector>, CapturedEvents
 /// Sets the page under the shared test header.
 fn set_page(app: &mut App, selector: &ViewHandle<TuiOptionSelector>, snapshot: OptionSnapshot) {
     selector.update(app, |selector, ctx| {
-        selector.set_page(header(), snapshot, false, ctx);
+        selector.set_page(page(snapshot, false), ctx);
+    });
+}
+#[test]
+fn search_editor_is_created_only_for_searchable_pages() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        set_page(&mut app, &selector, snapshot(&["auto"], Some("auto")));
+        assert!(selector.read(&app, |selector, _| selector.search_field.is_none()));
+
+        set_searchable_page(&mut app, &selector, snapshot(&["auto"], Some("auto")));
+        assert!(selector.read(&app, |selector, _| selector.search_field.is_some()));
     });
 }
 
@@ -146,7 +160,13 @@ fn up_from_top_focuses_search_and_down_returns_to_first_row() {
         );
 
         act(&mut app, &selector, TuiOptionSelectorAction::MoveUp);
-        assert!(app.read(|ctx| selector.as_ref(ctx).search_field.as_ref(ctx).is_focused()));
+        assert!(app.read(|ctx| selector
+            .as_ref(ctx)
+            .search_field
+            .as_ref()
+            .expect("searchable page has an editor")
+            .as_ref(ctx)
+            .is_focused()));
         assert!(app.read(|ctx| selector.as_ref(ctx).selection.selected_index().is_none()));
 
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
@@ -197,9 +217,21 @@ fn typing_a_letter_from_the_list_focuses_and_seeds_search() {
             &selector,
             TuiOptionSelectorAction::FocusSearchAndInsert('g'),
         );
-        assert!(app.read(|ctx| selector.as_ref(ctx).search_field.as_ref(ctx).is_focused()));
+        assert!(app.read(|ctx| selector
+            .as_ref(ctx)
+            .search_field
+            .as_ref()
+            .expect("searchable page has an editor")
+            .as_ref(ctx)
+            .is_focused()));
         assert_eq!(
-            app.read(|ctx| selector.as_ref(ctx).search_field.as_ref(ctx).text(ctx)),
+            app.read(|ctx| selector
+                .as_ref(ctx)
+                .search_field
+                .as_ref()
+                .expect("searchable page has an editor")
+                .as_ref(ctx)
+                .text(ctx)),
             "g"
         );
         assert!(render_lines(&app, &selector, 60)
@@ -245,7 +277,7 @@ fn set_searchable_page(
     snapshot: OptionSnapshot,
 ) {
     selector.update(app, |selector, ctx| {
-        selector.set_page(header(), snapshot, true, ctx);
+        selector.set_page(page(snapshot, true), ctx);
     });
 }
 
@@ -261,7 +293,12 @@ fn edit_custom_text(
 
 /// Applies a shared editor action to the search child.
 fn edit_search(app: &mut App, selector: &ViewHandle<TuiOptionSelector>, action: TuiEditorAction) {
-    let editor = selector.read(app, |selector, _| selector.search_field.clone());
+    let editor = selector.read(app, |selector, _| {
+        selector
+            .search_field
+            .clone()
+            .expect("searchable page has an editor")
+    });
     editor.update(app, |editor, ctx| {
         editor.handle_action(&TuiEditorViewAction::Editor(action), ctx);
     });
@@ -302,8 +339,12 @@ fn laid_out_element(
     app: &AppContext,
 ) -> (Box<dyn TuiElement>, TuiRect) {
     let selector_ref = selector.as_ref(app);
-    for editor in [&selector_ref.search_field, &selector_ref.custom_text_field] {
-        rendered_views.insert(editor.id(), editor.as_ref(app).render(app));
+    rendered_views.insert(
+        selector_ref.custom_text_field.id(),
+        selector_ref.custom_text_field.as_ref(app).render(app),
+    );
+    if let Some(search_field) = selector_ref.search_field.as_ref() {
+        rendered_views.insert(search_field.id(), search_field.as_ref(app).render(app));
     }
     let mut element = selector_ref.render(app);
     let size = {
@@ -352,12 +393,12 @@ fn highlighted_line(app: &App, selector: &ViewHandle<TuiOptionSelector>) -> Stri
             .expect("a highlighted item");
         let digit = index - selector.scroll_offset + 1;
         let label = match selector.items()[index] {
-            SelectorItem::Row(row_index) => selector.snapshot.rows[row_index].label.clone(),
+            SelectorItem::Row(row_index) => selector.page.snapshot.rows[row_index].label.clone(),
             SelectorItem::Retry => "↻ Retry".to_string(),
             SelectorItem::CustomText => selector
                 .custom_text_value
                 .clone()
-                .or_else(|| match &selector.snapshot.footer {
+                .or_else(|| match &selector.page.snapshot.footer {
                     Some(OptionFooter::CustomText { label }) => Some(label.clone()),
                     Some(OptionFooter::CreateNewAuthSecret) | None => None,
                 })
@@ -372,12 +413,12 @@ fn highlighted_line(app: &App, selector: &ViewHandle<TuiOptionSelector>) -> Stri
 }
 
 #[test]
-fn renders_header_position_question_and_initial_highlight() {
+fn renders_field_label_position_prompt_and_initial_highlight() {
     App::test((), |mut app| async move {
         let (selector, _) = add_selector(&mut app);
         set_page(&mut app, &selector, snapshot(&["a", "b", "c"], Some("b")));
         let lines = render_lines(&app, &selector, 60);
-        // Header: title, position in the current sequence, and the question.
+        // Header: field label, position in the current sequence, and prompt.
         assert!(lines[0].contains("Host"));
         assert!(lines[0].contains("←"));
         assert!(lines[0].contains("4 of 6"));
@@ -396,7 +437,7 @@ fn renders_header_position_question_and_initial_highlight() {
         assert_eq!(
             selected.fg,
             builder
-                .orchestration_option_selected_style()
+                .option_selector_selected_style()
                 .fg
                 .expect("selected option has a foreground")
         );
@@ -489,17 +530,17 @@ fn navigation_scrolls_to_keep_the_highlight_visible() {
 }
 
 #[test]
-fn list_viewport_shows_four_rows_and_arrow_overflow_markers() {
+fn list_viewport_shows_six_rows_and_arrow_overflow_markers() {
     App::test((), |mut app| async move {
         let (selector, _) = add_selector(&mut app);
         set_page(
             &mut app,
             &selector,
-            snapshot(&["a", "b", "c", "d", "e", "f"], Some("a")),
+            snapshot(&["a", "b", "c", "d", "e", "f", "g", "h"], Some("a")),
         );
         let lines = render_lines(&app, &selector, 60);
-        assert!(lines.iter().any(|line| line.contains("(4) d")));
-        assert!(!lines.iter().any(|line| line.contains("(5) e")));
+        assert!(lines.iter().any(|line| line.contains("(6) f")));
+        assert!(!lines.iter().any(|line| line.contains("(7) g")));
         assert!(lines.iter().any(|line| line.trim() == "↓"));
 
         act(&mut app, &selector, TuiOptionSelectorAction::ScrollBy(2));
@@ -689,23 +730,23 @@ fn create_new_auth_secret_footer_is_ignored() {
 }
 
 #[test]
-fn layout_changed_is_emitted_only_when_overflow_markers_toggle() {
+fn layout_invalidated_is_emitted_only_when_overflow_markers_toggle() {
     App::test((), |mut app| async move {
         let (selector, events) = add_selector(&mut app);
         set_page(
             &mut app,
             &selector,
-            snapshot(&["a", "b", "c", "d", "e", "f"], Some("a")),
+            snapshot(&["a", "b", "c", "d", "e", "f", "g", "h"], Some("a")),
         );
         events.borrow_mut().clear();
 
         // Moves within the viewport do not scroll, so nothing is emitted.
-        for _ in 0..3 {
+        for _ in 0..5 {
             act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
         }
         assert!(!events
             .borrow()
-            .contains(&TuiOptionSelectorEvent::LayoutChanged));
+            .contains(&TuiOptionSelectorEvent::LayoutInvalidated));
 
         // Scrolling past the viewport reveals the `↑` marker: one event.
         act(&mut app, &selector, TuiOptionSelectorAction::MoveDown);
@@ -713,7 +754,7 @@ fn layout_changed_is_emitted_only_when_overflow_markers_toggle() {
             events
                 .borrow()
                 .iter()
-                .filter(|event| **event == TuiOptionSelectorEvent::LayoutChanged)
+                .filter(|event| **event == TuiOptionSelectorEvent::LayoutInvalidated)
                 .count(),
             1,
         );
@@ -721,7 +762,7 @@ fn layout_changed_is_emitted_only_when_overflow_markers_toggle() {
 }
 
 #[test]
-fn layout_changed_is_emitted_when_the_custom_text_error_row_toggles() {
+fn layout_invalidated_is_emitted_when_the_custom_text_error_row_toggles() {
     App::test((), |mut app| async move {
         let (selector, events) = add_selector(&mut app);
         let mut with_footer = snapshot(&["warp"], Some("warp"));
@@ -736,7 +777,7 @@ fn layout_changed_is_emitted_when_the_custom_text_error_row_toggles() {
         confirm(&mut app, &selector);
         assert!(events
             .borrow()
-            .contains(&TuiOptionSelectorEvent::LayoutChanged));
+            .contains(&TuiOptionSelectorEvent::LayoutInvalidated));
         events.borrow_mut().clear();
 
         // Typing clears the error row.
@@ -747,7 +788,7 @@ fn layout_changed_is_emitted_when_the_custom_text_error_row_toggles() {
         );
         assert!(events
             .borrow()
-            .contains(&TuiOptionSelectorEvent::LayoutChanged));
+            .contains(&TuiOptionSelectorEvent::LayoutInvalidated));
     });
 }
 

@@ -42,13 +42,12 @@ use warpui_core::{
 
 use super::kill_buffer::KillBuffer;
 use crate::editor_element::{TuiEditorAction, TuiEditorElement, TuiEditorStyles};
-use crate::editor_view::{
-    register_shared_editor_bindings, TuiEditorBindingTarget, TuiEditorCommand,
-};
 use crate::inline_menu::{active_inline_menu, TuiInlineMenu, TuiInlineMenuAccepted};
 use crate::input_mode_policy::{self, AI_LOCKED_CONFIG, SHELL_LOCKED_CONFIG};
 use crate::input_suggestions_mode::TuiInputSuggestionsModeModel;
-use crate::keybindings::TUI_BINDING_GROUP;
+use crate::keybindings::{
+    register_shared_editor_bindings, TuiEditorBindingTarget, TuiEditorCommand, TUI_BINDING_GROUP,
+};
 use crate::tui_builder::TuiUiBuilder;
 
 /// Keymap-context flag set while the input has contextual Escape behavior.

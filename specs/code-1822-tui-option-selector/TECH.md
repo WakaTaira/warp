@@ -3,7 +3,7 @@
 ## Context
 
 This slice builds on the frontend-neutral orchestration option snapshots
-(base commit `aaf62142`; see `specs/code-1822-option-snapshots/TECH.md` for the data
+(base commit `d6da3b23`; see `specs/code-1822-option-snapshots/TECH.md` for the data
 contract). At that base, `app/src/tui_export.rs` re-exports `OptionSnapshot`,
 `OptionRow`, `OptionBadge`, `OptionSourceStatus`, and `OptionFooter`, but nothing in
 `crates/warp_tui` renders them: the TUI has no single-select list primitive.
@@ -21,22 +21,24 @@ and knows nothing about orchestration edit state.
 
 A `TuiView` + `TypedActionView` (`TuiOptionSelector`) rendering one page:
 
-- Header (`OptionSelectorHeader`): title on the left, right-aligned `← n of m →`
-  navigation state (boundary arrows muted), a blank separator row, and the page's
-  bold question.
+- `OptionSelectorPage` owns the full renderable page configuration: a short field
+  label, sequence position, full prompt, option snapshot, and search opt-in. The
+  header renders the field label on the left, right-aligned `← n of m →` navigation
+  state (boundary arrows muted), a blank separator row, and the bold prompt.
 - Option list rendered from an `OptionSnapshot` (`warp::tui_export`): up to
-  `MAX_VISIBLE_OPTION_ROWS` (4) rows visible at once with `↑` / `↓` overflow markers.
+  `MAX_VISIBLE_OPTION_ROWS` (6) rows visible at once with `↑` / `↓` overflow markers.
   Rows show a viewport-relative `(1)`-style number, the label, an optional badge
   suffix (`(default)` / `(recent)` / `(connected)`), and — for disabled rows — the
   `disabled_reason`. The selected row is bold magenta without an extra marker or
   background.
-- Optional search: `set_page(..., searchable, ctx)` renders a pinned `Search:` row
-  between the question and the scroll viewport. Search is not a `SelectorItem`; the
-  list starts focused on `selected_id` (or its first item) so digits remain immediate
-  shortcuts. Up from the top item focuses search, Down from search returns to the
-  first filtered item, and typing a non-digit from the list focuses and seeds search.
-  Filtering is case-insensitive substring matching over row labels; an empty result
-  renders `No matches`. The pinned search editor remains visible while rows scroll.
+- Optional search: `set_page(page, ctx)` lazily creates a search editor only when
+  `page.searchable` is true, then renders its pinned `Search:` row between the prompt
+  and scroll viewport. Search is not a `SelectorItem`; the list starts focused on
+  `selected_id` (or its first item) so digits remain immediate shortcuts. Up from the
+  top item focuses search, Down from search returns to the first filtered item, and
+  typing a non-digit from the list focuses and seeds search. Filtering is
+  case-insensitive substring matching over row labels; an empty result renders
+  `No matches`. The pinned search editor remains visible while rows scroll.
 - Status rows appended after the list per `OptionSourceStatus`: `Loading…` (dim),
   `Failed { message }` (error style, plus a selectable `↻ Retry` virtual row that
   emits `RetryRequested`), and `Empty { message }` (dim). Status rows are not
@@ -51,21 +53,26 @@ A `TuiView` + `TypedActionView` (`TuiOptionSelector`) rendering one page:
 
 State/API surface for the embedding host:
 
-- `new(ctx)` then `set_page(header, snapshot, searchable, ctx)` — resets the
-  search query and highlight to the
-  snapshot's `selected_id` (falling back to the first item) and discards any
-  in-progress custom-text editing.
+- `new(ctx)` then `set_page(page, ctx)` — atomically replaces the page configuration,
+  resets the search query and highlight to the snapshot's `selected_id` (falling back
+  to the first item), and discards any in-progress custom-text editing.
 - `refresh_snapshot(snapshot, ctx)` — in-place catalog refresh preserving the
   highlighted row when it still exists, else falling back to `selected_id`.
 - `confirm_highlighted(ctx)` — the host's Enter path: enabled rows emit
   `TuiOptionSelectorEvent::Confirmed { id }`; disabled rows stay highlighted so their
   reason remains visible; while the custom-text editor is active it validates
   (trimmed, non-empty — else an inline "Enter a value to continue." error) and emits
-  `CustomTextSubmitted { value }`.
+  `CustomTextSubmitted { value }`. While search owns focus, Enter confirms the first
+  enabled filtered row, skipping disabled matches.
 - `handle_back(ctx) -> bool` — the host's Escape path: cancels active custom-text
   editing and reports whether the key was consumed, so the host only leaves the page
   when the selector had nothing to unwind.
-- `is_editing_custom_text()` — lets the host suppress its own keymap while typing.
+- `TuiOptionSelectorEvent::LayoutInvalidated` — tells hosts with separately cached
+  measurements to remeasure after scrolling changes overflow markers, a catalog
+  refresh changes the row set, search changes the rendered rows, or the custom-text
+  validation row toggles. `ctx.notify()` still refreshes the child itself; the event
+  crosses the view boundary to invalidate the ancestor's cache, matching
+  `TuiAIBlockEvent::LayoutInvalidated` prior art.
 
 Focus and element-level input (via the private `SelectorInputElement` wrapper, active only
 while the selector is rendered as the blocking interaction):
@@ -94,7 +101,31 @@ Selection reuses `InlineMenuSelection` and `keep_selected_visible` from
 ### `crates/warp_tui/src/editor_view.rs`
 
 `TuiEditorView::single_line` is the TUI analogue of the GUI's
-`EditorView::single_line`, used by `FilterableDropdown`:
+`EditorView::single_line`, used by `FilterableDropdown`.
+
+`TuiInputView` is the application prompt surface rather than a reusable text
+field. It owns the shared input-mode and suggestions models, inline-menu routing,
+shell-mode transitions and `!` chrome, prompt submission and contextual Escape,
+kill/yank state, and a six-row scrolling policy
+(`crates/warp_tui/src/input/view.rs` (335-985)). Reusing it for search or custom
+text would require unrelated prompt dependencies and would let prompt policy
+compete with selector-owned Enter, Escape, and Up/Down behavior.
+
+The reusable boundary is therefore the existing `CodeEditorModel` +
+`TuiEditorElement`, wrapped by a small view that owns only focus, content events,
+single-line insertion policy, and generic editing actions
+(`crates/warp_tui/src/editor_view.rs` (49-322)). `TuiInputView` and
+`TuiEditorView` still share the common editor-command binding table
+(`crates/warp_tui/src/keybindings.rs` (35-224)); only surface-specific policy
+remains on each view.
+
+This follows the GUI composition used by `FilterableDropdown`: the dropdown owns
+filtering, selection, Enter/Escape, and vertical navigation, while embedding an
+`EditorView::single_line` configured to propagate vertical navigation
+(`app/src/view_components/filterable_dropdown.rs` (87-124), (660-722)). GUI
+custom-host editing uses the same generic single-line `EditorView` rather than
+the application prompt input
+(`app/src/ai/blocklist/inline_action/host_picker.rs` (119-150)).
 
 - Owns a char-cell `CodeEditorModel` and renders the existing `TuiEditorElement`.
 - Tracks `focused` via `TuiView::on_focus` / `on_blur` and snapshots it into the
@@ -105,8 +136,9 @@ Selection reuses `InlineMenuSelection` and `keep_selected_visible` from
 - Applies the same editor actions as `TuiInputView` for insertion, paste, mouse
   selection, and Backspace. The selector owns `Search:` / custom-host labels and
   validation chrome around the generic child view.
-- Defines one shared editor-command binding table used by both `TuiInputView` and
-  `TuiEditorView`, preserving each consumer's stable `tui:input:*` /
+- Uses the shared editor-command binding table in
+  `crates/warp_tui/src/keybindings.rs` alongside `TuiInputView`, preserving each
+  consumer's stable `tui:input:*` /
   `tui:editor:*` names and concrete action type. Common horizontal/word/line
   movement, deletion, selection, undo, and redo keys are specified once. Vertical
   movement, Enter, Escape, Tab, and kill/yank remain input/host policy so search
@@ -117,8 +149,8 @@ Selection reuses `InlineMenuSelection` and `keep_selected_visible` from
 
 ### `crates/warp_tui/src/tui_builder.rs`
 
-Adds `orchestration_option_selected_style()`: bold, full-strength magenta text for
-the selected option. The card slice adds its orchestration surface background and
+Adds `option_selector_selected_style()`: bold, full-strength magenta text for the
+selected option. The card slice adds its orchestration surface background and
 remaining recipes (title glyph, selected metadata values, identity palette) itself.
 
 ### `crates/warp_tui/src/lib.rs`
@@ -129,7 +161,7 @@ until the card slice; that slice removes the allow.
 
 ## Testing and validation
 
-- `crates/warp_tui/src/option_selector_tests.rs` covers: header/position/question
+- `crates/warp_tui/src/option_selector_tests.rs` covers: field label/position/prompt
   rendering and initial highlight from `selected_id`; Up/Down + Enter confirmation;
   digit confirmation, including viewport-relative digits in scrolled lists; scrolling
   to keep the highlight visible with overflow markers; disabled rows being
@@ -138,11 +170,14 @@ until the card slice; that slice removes the allow.
   custom-text trim/validate/submit, submitted-value rendering/re-editing/restoration,
   and Backspace; Back cancelling custom-text editing before leaving the page; the
   ignored `CreateNewAuthSecret` footer; snapshot-refresh
-  highlight preservation and selected-value fallback; badge rendering; and paste being
-  consumed only while the custom-text editor is active (first line only);
+  highlight preservation and selected-value fallback; lazy search-editor creation;
+  `LayoutInvalidated` emission when overflow markers or custom-text validation change
+  rendered height; badge rendering;
+  and paste falling through from the list while the custom-text editor consumes it
+  using only the first line;
   searchable pages starting on the selected row; boundary focus handoff; numeric
   shortcuts remaining active from the list; digit-containing queries; filtering,
-  no-match rendering, first-match confirmation, and clear-on-Escape.
+  no-match rendering, Enter confirmation from focused search, and clear-on-Escape.
 - `crates/warp_tui/src/editor_view_tests.rs` covers single-line model editing and
   view-owned focus transitions, shared Ctrl+A/Home registration for both editor
   consumers, line-start command behavior, and mouse-selection focus independently
@@ -150,7 +185,8 @@ until the card slice; that slice removes the allow.
 - Tests host the selector under `test_fixtures::TestHostView` in a headless TUI
   window and render to lines (see the `tui-testing` conventions).
 - Commands: `cargo check -p warp_tui`,
-  `cargo nextest run -p warp_tui -E 'test(option_selector)'`, plus `./script/format`.
+  `cargo nextest run -p warp_tui -E 'test(option_selector) or test(editor_view)'`,
+  plus `./script/format`.
 
 ## Follow-ups
 

@@ -1,4 +1,8 @@
-//! A reusable focusable TUI editor view over the shared editor model/element.
+//! Generic focusable TUI text field over the shared editor model and element.
+//!
+//! Unlike [`crate::input::TuiInputView`], this view owns no prompt submission,
+//! input-mode, inline-menu, or form policy. Embedding views provide that chrome
+//! and behavior while reusing model-backed editing and focus handling.
 
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp_editor::model::{CoreEditorModel, PlainTextEditorModel};
@@ -6,198 +10,16 @@ use warp_editor::selection::{TextDirection, TextUnit};
 use warpui_core::elements::tui::{TuiElement, TuiHoverable};
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::keymap::macros::*;
-use warpui_core::keymap::{ContextPredicate, EditableBinding};
 use warpui_core::text::word_boundaries::WordBoundariesPolicy;
 use warpui_core::{
-    Action, AppContext, BlurContext, Entity, FocusContext, ModelHandle, TuiView, TypedActionView,
+    AppContext, BlurContext, Entity, FocusContext, ModelHandle, TuiView, TypedActionView,
     ViewContext,
 };
 
 use crate::editor_element::{TuiEditorAction, TuiEditorElement};
-use crate::keybindings::TUI_BINDING_GROUP;
-
-/// Editing commands whose key definitions are shared by all TUI editors.
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum TuiEditorCommand {
-    Backspace,
-    DeleteForward,
-    DeleteWordBackward,
-    DeleteWordForward,
-    MoveLeft,
-    MoveRight,
-    MoveWordLeft,
-    MoveWordRight,
-    MoveToLineStart,
-    MoveToLineEnd,
-    SelectLeft,
-    SelectRight,
-    SelectWordLeft,
-    SelectWordRight,
-    SelectAll,
-    Undo,
-    Redo,
-}
-
-/// Selects stable user-configurable names for each binding consumer.
-#[derive(Clone, Copy)]
-pub(crate) enum TuiEditorBindingTarget {
-    Input,
-    Editor,
-}
-
-struct EditorBindingSpec {
-    command: TuiEditorCommand,
-    input_name: &'static str,
-    editor_name: &'static str,
-    description: &'static str,
-    keys: &'static [&'static str],
-}
-
-const SHARED_EDITOR_BINDINGS: &[EditorBindingSpec] = &[
-    EditorBindingSpec {
-        command: TuiEditorCommand::Backspace,
-        input_name: "tui:input:backspace",
-        editor_name: "tui:editor:backspace",
-        description: "Delete the previous character",
-        keys: &["backspace", "shift-backspace", "ctrl-h"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::DeleteForward,
-        input_name: "tui:input:delete_forward",
-        editor_name: "tui:editor:delete_forward",
-        description: "Delete the next character",
-        keys: &["delete", "ctrl-d"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::DeleteWordBackward,
-        input_name: "tui:input:delete_word_backward",
-        editor_name: "tui:editor:delete_word_backward",
-        description: "Delete the previous word",
-        keys: &["ctrl-w", "ctrl-backspace", "alt-backspace"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::DeleteWordForward,
-        input_name: "tui:input:delete_word_forward",
-        editor_name: "tui:editor:delete_word_forward",
-        description: "Delete the next word",
-        keys: &["alt-d", "alt-delete", "ctrl-delete"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::MoveLeft,
-        input_name: "tui:input:move_left",
-        editor_name: "tui:editor:move_left",
-        description: "Move cursor left",
-        keys: &["left", "ctrl-b"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::MoveRight,
-        input_name: "tui:input:move_right",
-        editor_name: "tui:editor:move_right",
-        description: "Move cursor right",
-        keys: &["right", "ctrl-f"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::MoveWordLeft,
-        input_name: "tui:input:move_word_left",
-        editor_name: "tui:editor:move_word_left",
-        description: "Move cursor one word left",
-        keys: &["alt-left", "alt-b", "ctrl-left"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::MoveWordRight,
-        input_name: "tui:input:move_word_right",
-        editor_name: "tui:editor:move_word_right",
-        description: "Move cursor one word right",
-        keys: &["alt-right", "alt-f", "ctrl-right"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::MoveToLineStart,
-        input_name: "tui:input:move_to_line_start",
-        editor_name: "tui:editor:move_to_line_start",
-        description: "Move cursor to start of line",
-        keys: &["home", "ctrl-a"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::MoveToLineEnd,
-        input_name: "tui:input:move_to_line_end",
-        editor_name: "tui:editor:move_to_line_end",
-        description: "Move cursor to end of line",
-        keys: &["end", "ctrl-e"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::SelectLeft,
-        input_name: "tui:input:select_left",
-        editor_name: "tui:editor:select_left",
-        description: "Extend selection left",
-        keys: &["shift-left"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::SelectRight,
-        input_name: "tui:input:select_right",
-        editor_name: "tui:editor:select_right",
-        description: "Extend selection right",
-        keys: &["shift-right"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::SelectWordLeft,
-        input_name: "tui:input:select_word_left",
-        editor_name: "tui:editor:select_word_left",
-        description: "Extend selection one word left",
-        keys: &["ctrl-shift-left", "alt-shift-left"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::SelectWordRight,
-        input_name: "tui:input:select_word_right",
-        editor_name: "tui:editor:select_word_right",
-        description: "Extend selection one word right",
-        keys: &["ctrl-shift-right", "alt-shift-right"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::SelectAll,
-        input_name: "tui:input:select_all",
-        editor_name: "tui:editor:select_all",
-        description: "Select all text",
-        keys: &["ctrl-shift-A"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::Undo,
-        input_name: "tui:input:undo",
-        editor_name: "tui:editor:undo",
-        description: "Undo",
-        keys: &["ctrl-z"],
-    },
-    EditorBindingSpec {
-        command: TuiEditorCommand::Redo,
-        input_name: "tui:input:redo",
-        editor_name: "tui:editor:redo",
-        description: "Redo",
-        keys: &["ctrl-shift-Z"],
-    },
-];
-
-/// Registers the common editor binding table for one concrete view action.
-pub(crate) fn register_shared_editor_bindings<A>(
-    app: &mut AppContext,
-    target: TuiEditorBindingTarget,
-    context: ContextPredicate,
-    action_for: impl Fn(TuiEditorCommand) -> A,
-) where
-    A: Action,
-{
-    let bindings = SHARED_EDITOR_BINDINGS.iter().flat_map(|spec| {
-        spec.keys.iter().map(|key| {
-            let name = match target {
-                TuiEditorBindingTarget::Input => spec.input_name,
-                TuiEditorBindingTarget::Editor => spec.editor_name,
-            };
-            EditableBinding::new(name, spec.description, action_for(spec.command))
-                .with_context_predicate(context.clone())
-                .with_group(TUI_BINDING_GROUP)
-                .with_key_binding(key)
-        })
-    });
-    app.register_editable_bindings(bindings);
-}
+use crate::keybindings::{
+    register_shared_editor_bindings, TuiEditorBindingTarget, TuiEditorCommand,
+};
 
 /// Registers shared single-line editor bindings.
 pub(crate) fn init(app: &mut AppContext) {

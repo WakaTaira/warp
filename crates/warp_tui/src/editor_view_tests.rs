@@ -11,8 +11,9 @@ use warpui_core::elements::tui::{
 use warpui_core::keymap::Trigger;
 use warpui_core::{App, TuiView as _, TypedActionView as _};
 
-use super::{TuiEditorCommand, TuiEditorView, TuiEditorViewAction};
+use super::{TuiEditorView, TuiEditorViewAction};
 use crate::editor_element::TuiEditorAction;
+use crate::keybindings::TuiEditorCommand;
 use crate::test_fixtures::TestHostView;
 
 /// Renders an editor view to trimmed lines.

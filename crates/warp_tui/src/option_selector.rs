@@ -30,18 +30,41 @@ use crate::inline_menu::keep_selected_visible;
 use crate::tui_builder::TuiUiBuilder;
 
 /// Maximum option rows visible at once; longer lists scroll.
-pub(crate) const MAX_VISIBLE_OPTION_ROWS: usize = 4;
+pub(crate) const MAX_VISIBLE_OPTION_ROWS: usize = 6;
 
 /// Validation copy shown when the custom-text editor is submitted empty.
 const CUSTOM_TEXT_EMPTY_ERROR: &str = "Enter a value to continue.";
 
-/// Header metadata rendered above the option list.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct OptionSelectorHeader {
-    pub(crate) title: String,
+/// Renderable fields for one selector page.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OptionSelectorPage {
+    /// Short field label shown in the header row.
+    pub(crate) field_label: String,
     /// One-based position in the current page sequence: `(current, total)`.
     pub(crate) position: (usize, usize),
-    pub(crate) question: String,
+    /// Full prompt shown above the available options.
+    pub(crate) prompt: String,
+    /// Options and catalog status rendered on this page.
+    pub(crate) snapshot: OptionSnapshot,
+    /// Whether this page offers label filtering.
+    pub(crate) searchable: bool,
+}
+
+impl Default for OptionSelectorPage {
+    fn default() -> Self {
+        Self {
+            field_label: String::new(),
+            position: (0, 0),
+            prompt: String::new(),
+            snapshot: OptionSnapshot {
+                rows: Vec::new(),
+                selected_id: None,
+                status: OptionSourceStatus::Ready,
+                footer: None,
+            },
+            searchable: false,
+        }
+    }
 }
 
 /// Events emitted to the embedding card view.
@@ -56,11 +79,10 @@ pub(crate) enum TuiOptionSelectorEvent {
     /// The selector asked to be dismissed (element-level Escape fallback for
     /// hosts without their own Escape binding).
     Dismissed,
-    /// Something that affects the selector's rendered height changed: the
-    /// viewport scrolled (overflow markers), the row catalog refreshed, or
-    /// the custom-text error row toggled. Hosts whose measured height is
-    /// cached re-measure on this event.
-    LayoutChanged,
+    /// The selector's intrinsic height changed. `ctx.notify()` refreshes this
+    /// child view, while this event lets a host invalidate a separately cached
+    /// measurement of the containing card.
+    LayoutInvalidated,
 }
 
 /// User interactions dispatched from the selector's element tree.
@@ -95,13 +117,11 @@ enum SelectorItem {
 
 /// A reusable single-select option list view. See the module docs.
 pub(crate) struct TuiOptionSelector {
-    header: OptionSelectorHeader,
-    snapshot: OptionSnapshot,
+    page: OptionSelectorPage,
     selection: InlineMenuSelection,
     scroll_offset: usize,
-    searchable: bool,
     search_query: String,
-    search_field: ViewHandle<TuiEditorView>,
+    search_field: Option<ViewHandle<TuiEditorView>>,
     custom_text_field: ViewHandle<TuiEditorView>,
     custom_text_active: bool,
     custom_text_error_visible: bool,
@@ -119,38 +139,22 @@ pub(crate) struct TuiOptionSelector {
 impl TuiOptionSelector {
     /// Creates an empty selector; hosts call [`Self::set_page`] before render.
     pub(crate) fn new(ctx: &mut ViewContext<Self>) -> Self {
-        let search_field = ctx.add_typed_action_tui_view(TuiEditorView::single_line);
-        ctx.subscribe_to_view(&search_field, |me, _, event, ctx| {
-            let TuiEditorViewEvent::Changed(query) = event;
-            me.search_query = query.clone();
-            me.selection.clear();
-            me.scroll_offset = 0;
-            me.sync_after_items_changed();
-            ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
-            ctx.notify();
-        });
         let custom_text_field = ctx.add_typed_action_tui_view(TuiEditorView::single_line);
         ctx.subscribe_to_view(&custom_text_field, |me, _, event, ctx| {
             let TuiEditorViewEvent::Changed(_) = event;
             if me.custom_text_error_visible {
                 me.custom_text_error_visible = false;
-                ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+                ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
             }
             ctx.notify();
         });
+
         Self {
-            header: OptionSelectorHeader::default(),
-            snapshot: OptionSnapshot {
-                rows: Vec::new(),
-                selected_id: None,
-                status: OptionSourceStatus::Ready,
-                footer: None,
-            },
+            page: OptionSelectorPage::default(),
             selection: InlineMenuSelection::default(),
             scroll_offset: 0,
-            searchable: false,
             search_query: String::new(),
-            search_field,
+            search_field: None,
             custom_text_field,
             custom_text_active: false,
             custom_text_error_visible: false,
@@ -160,30 +164,45 @@ impl TuiOptionSelector {
         }
     }
 
-    /// Replaces the header and snapshot for a new page: the highlight starts
-    /// on the snapshot's current value and any in-progress
-    /// custom-text editing is discarded.
-    pub(crate) fn set_page(
-        &mut self,
-        header: OptionSelectorHeader,
-        snapshot: OptionSnapshot,
-        searchable: bool,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.header = header;
-        self.custom_text_value = custom_text_value(&snapshot);
-        self.snapshot = snapshot;
-        self.searchable = searchable;
-        self.search_query.clear();
+    /// Creates and subscribes to the optional search editor.
+    fn add_search_field(ctx: &mut ViewContext<Self>) -> ViewHandle<TuiEditorView> {
+        let search_field = ctx.add_typed_action_tui_view(TuiEditorView::single_line);
+        ctx.subscribe_to_view(&search_field, |me, _, event, ctx| {
+            let TuiEditorViewEvent::Changed(query) = event;
+            me.search_query = query.clone();
+            me.selection.clear();
+            me.scroll_offset = 0;
+            me.sync_after_items_changed();
+            ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
+            ctx.notify();
+        });
+        search_field
+    }
+    /// Whether the optional search editor currently owns focus.
+    fn search_field_is_focused(&self, ctx: &AppContext) -> bool {
         self.search_field
-            .update(ctx, |editor, ctx| editor.set_text("", ctx));
+            .as_ref()
+            .is_some_and(|field| field.as_ref(ctx).is_focused())
+    }
+
+    /// Replaces the current page and resets its transient interaction state.
+    pub(crate) fn set_page(&mut self, page: OptionSelectorPage, ctx: &mut ViewContext<Self>) {
+        if page.searchable && self.search_field.is_none() {
+            self.search_field = Some(Self::add_search_field(ctx));
+        }
+        self.custom_text_value = custom_text_value(&page.snapshot);
+        self.page = page;
+        self.search_query.clear();
+        if let Some(search_field) = self.search_field.as_ref() {
+            search_field.update(ctx, |editor, ctx| editor.set_text("", ctx));
+        }
         let custom_text = self.custom_text_value.clone().unwrap_or_default();
         self.custom_text_field
             .update(ctx, |editor, ctx| editor.set_text(custom_text, ctx));
         self.custom_text_active = false;
         self.custom_text_error_visible = false;
         self.selection.clear();
-        self.highlight_id(self.snapshot.selected_id.clone());
+        self.highlight_id(self.page.snapshot.selected_id.clone());
         self.sync_after_items_changed();
         ctx.focus_self();
         ctx.notify();
@@ -199,18 +218,18 @@ impl TuiOptionSelector {
     ) {
         let highlighted = self.highlighted_row_id();
         self.custom_text_value = custom_text_value(&snapshot);
-        self.snapshot = snapshot;
+        self.page.snapshot = snapshot;
         let target = highlighted
-            .filter(|id| self.snapshot.rows.iter().any(|row| &row.id == id))
-            .or_else(|| self.snapshot.selected_id.clone());
-        if self.search_field.as_ref(ctx).is_focused() {
+            .filter(|id| self.page.snapshot.rows.iter().any(|row| &row.id == id))
+            .or_else(|| self.page.snapshot.selected_id.clone());
+        if self.search_field_is_focused(ctx) {
             self.selection.clear();
         } else {
             self.highlight_id(target);
         }
         self.sync_after_items_changed();
         // A refreshed catalog can change the row count and thus the height.
-        ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+        ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
         ctx.notify();
     }
 
@@ -236,7 +255,7 @@ impl TuiOptionSelector {
             &mut self.scroll_offset,
         );
         if self.scroll_offset != before {
-            ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+            ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
         }
     }
 
@@ -250,7 +269,7 @@ impl TuiOptionSelector {
             self.submit_custom_text(ctx);
             return;
         }
-        if self.search_field.as_ref(ctx).is_focused() {
+        if self.search_field_is_focused(ctx) {
             if let Some(index) = self.items().iter().position(|item| {
                 matches!(item, SelectorItem::Row(_)) && self.item_is_confirmable(*item)
             }) {
@@ -272,19 +291,20 @@ impl TuiOptionSelector {
             self.custom_text_active = false;
             if self.custom_text_error_visible {
                 self.custom_text_error_visible = false;
-                ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+                ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
             }
             ctx.focus_self();
             ctx.notify();
             return true;
         }
-        if self.search_field.as_ref(ctx).is_focused() && !self.search_query.is_empty() {
+        if self.search_field_is_focused(ctx) && !self.search_query.is_empty() {
             self.search_query.clear();
-            self.search_field
-                .update(ctx, |field, ctx| field.set_text("", ctx));
+            if let Some(search_field) = self.search_field.as_ref() {
+                search_field.update(ctx, |field, ctx| field.set_text("", ctx));
+            }
             self.scroll_offset = 0;
             self.sync_after_items_changed();
-            ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+            ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
             ctx.notify();
             return true;
         }
@@ -294,20 +314,20 @@ impl TuiOptionSelector {
     /// The navigable entries, in display order.
     fn items(&self) -> Vec<SelectorItem> {
         let query = self.search_query.to_lowercase();
-        let mut items: Vec<SelectorItem> = (0..self.snapshot.rows.len())
+        let mut items: Vec<SelectorItem> = (0..self.page.snapshot.rows.len())
             .filter(|index| {
                 query.is_empty()
-                    || self.snapshot.rows[*index]
+                    || self.page.snapshot.rows[*index]
                         .label
                         .to_lowercase()
                         .contains(&query)
             })
             .map(SelectorItem::Row)
             .collect();
-        if matches!(self.snapshot.status, OptionSourceStatus::Failed { .. }) {
+        if matches!(self.page.snapshot.status, OptionSourceStatus::Failed { .. }) {
             items.push(SelectorItem::Retry);
         }
-        match &self.snapshot.footer {
+        match &self.page.snapshot.footer {
             Some(OptionFooter::CustomText { .. }) => items.push(SelectorItem::CustomText),
             // Resource creation is out of scope in the TUI.
             Some(OptionFooter::CreateNewAuthSecret) | None => {}
@@ -320,6 +340,7 @@ impl TuiOptionSelector {
     fn item_is_confirmable(&self, item: SelectorItem) -> bool {
         match item {
             SelectorItem::Row(index) => self
+                .page
                 .snapshot
                 .rows
                 .get(index)
@@ -332,9 +353,12 @@ impl TuiOptionSelector {
     fn highlighted_row_id(&self) -> Option<String> {
         let items = self.items();
         match self.selection.selected_index().and_then(|i| items.get(i)) {
-            Some(SelectorItem::Row(index)) => {
-                self.snapshot.rows.get(*index).map(|row| row.id.clone())
-            }
+            Some(SelectorItem::Row(index)) => self
+                .page
+                .snapshot
+                .rows
+                .get(*index)
+                .map(|row| row.id.clone()),
             Some(SelectorItem::Retry) | Some(SelectorItem::CustomText) | None => None,
         }
     }
@@ -346,6 +370,7 @@ impl TuiOptionSelector {
             .and_then(|id| {
                 items.iter().position(|item| match item {
                     SelectorItem::Row(index) => self
+                        .page
                         .snapshot
                         .rows
                         .get(*index)
@@ -384,7 +409,7 @@ impl TuiOptionSelector {
     /// Moves the highlight one step, scrolling to keep it visible.
     fn move_highlight(&mut self, forward: bool, ctx: &mut ViewContext<Self>) {
         let items_len = self.items().len();
-        if self.search_field.as_ref(ctx).is_focused() {
+        if self.search_field_is_focused(ctx) {
             if forward && items_len > 0 {
                 self.selection.select(0, items_len, |_| true);
                 ctx.focus_self();
@@ -394,7 +419,7 @@ impl TuiOptionSelector {
             return;
         }
         if !forward
-            && self.searchable
+            && self.page.searchable
             && self
                 .selection
                 .selected_index()
@@ -402,7 +427,9 @@ impl TuiOptionSelector {
         {
             self.selection.clear();
             self.scroll_offset = 0;
-            ctx.focus(&self.search_field);
+            if let Some(search_field) = self.search_field.as_ref() {
+                ctx.focus(search_field);
+            }
             ctx.notify();
             return;
         }
@@ -432,7 +459,7 @@ impl TuiOptionSelector {
         }
         match item {
             SelectorItem::Row(row_index) => {
-                if let Some(row) = self.snapshot.rows.get(row_index) {
+                if let Some(row) = self.page.snapshot.rows.get(row_index) {
                     ctx.emit(TuiOptionSelectorEvent::Confirmed { id: row.id.clone() });
                 }
             }
@@ -464,15 +491,15 @@ impl TuiOptionSelector {
         if value.is_empty() {
             if !self.custom_text_error_visible {
                 self.custom_text_error_visible = true;
-                ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+                ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
             }
         } else {
             if self.custom_text_error_visible {
-                ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+                ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
             }
             self.custom_text_active = false;
             self.custom_text_error_visible = false;
-            self.snapshot.selected_id = Some(value.clone());
+            self.page.snapshot.selected_id = Some(value.clone());
             self.custom_text_value = Some(value.clone());
             ctx.focus_self();
             ctx.emit(TuiOptionSelectorEvent::CustomTextSubmitted { value });
@@ -491,17 +518,17 @@ impl TuiOptionSelector {
             .saturating_add_signed(rows)
             .min(max_offset);
         if self.scroll_offset != before {
-            ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+            ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
         }
         ctx.notify();
     }
 
     // ── Rendering ───────────────────────────────────────────────────
 
-    /// One header block: title + position, then the page's question.
+    /// One header block: field label + position, then the page prompt.
     fn render_header(&self, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
-        let (current, total) = self.header.position;
-        let title = TuiText::new(self.header.title.clone())
+        let (current, total) = self.page.position;
+        let title = TuiText::new(self.page.field_label.clone())
             .with_style(builder.primary_text_style())
             .truncate()
             .finish();
@@ -532,7 +559,7 @@ impl TuiOptionSelector {
             .child(title_row)
             .child(TuiText::new(" ").finish())
             .child(
-                TuiText::new(self.header.question.clone())
+                TuiText::new(self.page.prompt.clone())
                     .with_style(builder.primary_text_style().add_modifier(Modifier::BOLD))
                     .finish(),
             )
@@ -550,14 +577,14 @@ impl TuiOptionSelector {
     ) -> Box<dyn TuiElement> {
         let disabled = row.disabled_reason.is_some();
         let label_style = if is_highlighted {
-            builder.orchestration_option_selected_style()
+            builder.option_selector_selected_style()
         } else if disabled {
             builder.dim_text_style()
         } else {
             builder.primary_text_style()
         };
         let detail_style = if is_highlighted {
-            builder.orchestration_option_selected_style()
+            builder.option_selector_selected_style()
         } else if disabled {
             builder.dim_text_style()
         } else {
@@ -596,7 +623,7 @@ impl TuiOptionSelector {
         builder: &TuiUiBuilder,
     ) -> Box<dyn TuiElement> {
         let style = if is_highlighted {
-            builder.orchestration_option_selected_style()
+            builder.option_selector_selected_style()
         } else {
             style
         };
@@ -646,7 +673,7 @@ impl TuiOptionSelector {
 
         let visible_end = (self.scroll_offset + MAX_VISIBLE_OPTION_ROWS).min(items.len());
         let visible = self.scroll_offset..visible_end;
-        if self.searchable
+        if self.page.searchable
             && !self.search_query.is_empty()
             && !items
                 .iter()
@@ -674,7 +701,7 @@ impl TuiOptionSelector {
                 !self.custom_text_active && self.selection.selected_index() == Some(index);
             let element = match item {
                 SelectorItem::Row(row_index) => {
-                    let Some(row) = self.snapshot.rows.get(row_index) else {
+                    let Some(row) = self.page.snapshot.rows.get(row_index) else {
                         continue;
                     };
                     self.render_row(row, digit, is_highlighted, builder)
@@ -687,7 +714,7 @@ impl TuiOptionSelector {
                     builder,
                 ),
                 SelectorItem::CustomText => {
-                    match (&self.snapshot.footer, self.custom_text_active) {
+                    match (&self.page.snapshot.footer, self.custom_text_active) {
                         (Some(OptionFooter::CustomText { label }), true) => self
                             .render_editor_field(
                                 digit.map_or_else(
@@ -735,7 +762,7 @@ impl TuiOptionSelector {
             );
         }
 
-        match &self.snapshot.status {
+        match &self.page.snapshot.status {
             OptionSourceStatus::Ready => {}
             OptionSourceStatus::Loading => {
                 column.add_child(
@@ -790,11 +817,16 @@ impl TuiView for TuiOptionSelector {
     fn render(&self, app: &AppContext) -> Box<dyn TuiElement> {
         let builder = TuiUiBuilder::from_app(app);
         let mut content = TuiFlex::column().child(self.render_header(&builder));
-        if self.searchable {
+        if let Some(search_field) = self
+            .page
+            .searchable
+            .then_some(self.search_field.as_ref())
+            .flatten()
+        {
             content.add_child(self.render_editor_field(
                 String::new(),
                 "Search",
-                &self.search_field,
+                search_field,
                 None,
                 &builder,
             ));
@@ -803,13 +835,17 @@ impl TuiView for TuiOptionSelector {
         SelectorInputElement {
             child: content.finish(),
             list_focused: self.focused,
-            searchable: self.searchable,
+            searchable: self.page.searchable,
         }
         .finish()
     }
 
     fn child_view_ids(&self, _app: &AppContext) -> Vec<EntityId> {
-        vec![self.search_field.id(), self.custom_text_field.id()]
+        let mut ids = vec![self.custom_text_field.id()];
+        if self.page.searchable {
+            ids.extend(self.search_field.iter().map(ViewHandle::id));
+        }
+        ids
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
@@ -817,7 +853,11 @@ impl TuiView for TuiOptionSelector {
             FocusContext::SelfFocused => self.focused = true,
             FocusContext::DescendentFocused(view_id) => {
                 self.focused = false;
-                if *view_id == self.search_field.id() {
+                if self
+                    .search_field
+                    .as_ref()
+                    .is_some_and(|search_field| *view_id == search_field.id())
+                {
                     self.selection.clear();
                 }
             }
@@ -845,16 +885,17 @@ impl TypedActionView for TuiOptionSelector {
             TuiOptionSelectorAction::SelectItem(index) => self.confirm_item(*index, ctx),
             TuiOptionSelectorAction::ScrollBy(rows) => self.scroll_by(*rows, ctx),
             TuiOptionSelectorAction::FocusSearchAndInsert(c) => {
-                if self.searchable {
+                if let Some(search_field) =
+                    self.search_field.clone().filter(|_| self.page.searchable)
+                {
                     self.search_query.push(*c);
                     let query = self.search_query.clone();
-                    self.search_field
-                        .update(ctx, |field, ctx| field.set_text(query, ctx));
+                    search_field.update(ctx, |field, ctx| field.set_text(query, ctx));
                     self.selection.clear();
                     self.scroll_offset = 0;
                     self.sync_after_items_changed();
-                    ctx.focus(&self.search_field);
-                    ctx.emit(TuiOptionSelectorEvent::LayoutChanged);
+                    ctx.focus(&search_field);
+                    ctx.emit(TuiOptionSelectorEvent::LayoutInvalidated);
                     ctx.notify();
                 }
             }

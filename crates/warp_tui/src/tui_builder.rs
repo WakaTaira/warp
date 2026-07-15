@@ -211,8 +211,8 @@ impl TuiUiBuilder {
         TuiStyle::default().fg(cell_color(self.warping_base_fill()))
     }
 
-    /// Bold magenta text for the selected orchestration option.
-    pub(crate) fn orchestration_option_selected_style(&self) -> TuiStyle {
+    /// Bold magenta text for a selected option-selector row.
+    pub(crate) fn option_selector_selected_style(&self) -> TuiStyle {
         TuiStyle::default()
             .fg(cell_color(ThemeFill::from(
                 self.warp_theme.terminal_colors().normal.magenta,
