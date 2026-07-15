@@ -8,9 +8,9 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use warp::tui_export::{
     should_show_task_in_blocklist, AIAgentExchangeId, AIBlockModelImpl, AIConversationId,
-    BlockIndex, BlockPadding, BlockSpacing, BlocklistAIActionModel, BlocklistAIHistoryEvent,
-    BlocklistAIHistoryModel, ConversationBlockRestorationPlan, ModelEventDispatcher,
-    RichContentItem, RichContentType, TerminalModel,
+    BlockHeightItem, BlockIndex, BlockPadding, BlockSpacing, BlocklistAIActionModel,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationBlockRestorationPlan,
+    ModelEventDispatcher, RichContentItem, RichContentType, TerminalModel,
 };
 use warp_core::semantic_selection::SemanticSelection;
 use warpui_core::elements::tui::{
@@ -19,7 +19,7 @@ use warpui_core::elements::tui::{
 };
 use warpui_core::{
     AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TuiView, TypedActionView,
-    ViewContext,
+    ViewContext, ViewHandle,
 };
 
 use super::agent_block::{TuiAIBlock, TuiAIBlockEvent};
@@ -220,6 +220,40 @@ impl TuiTranscriptView {
             .blocks()
             .iter()
             .any(|block| should_render_terminal_block(block, block_list))
+    }
+
+    fn agent_blocks_in_canonical_order(&self) -> Vec<ViewHandle<TuiAIBlock>> {
+        let view_ids = {
+            let model = self.model.lock();
+            model
+                .block_list()
+                .block_heights()
+                .cursor::<(), ()>()
+                .filter_map(|item| match item {
+                    BlockHeightItem::RichContent(item) if !item.should_hide => Some(item.view_id),
+                    BlockHeightItem::Block(_)
+                    | BlockHeightItem::Gap(_)
+                    | BlockHeightItem::RestoredBlockSeparator { .. }
+                    | BlockHeightItem::InlineBanner { .. }
+                    | BlockHeightItem::SubshellSeparator { .. }
+                    | BlockHeightItem::RichContent(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let agent_blocks = self.agent_blocks.borrow();
+        view_ids
+            .into_iter()
+            .filter_map(|view_id| agent_blocks.get(&view_id).cloned())
+            .collect()
+    }
+
+    pub(super) fn toggle_latest_plan(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        for block in self.agent_blocks_in_canonical_order().into_iter().rev() {
+            if block.update(ctx, |block, ctx| block.toggle_latest_plan(ctx)) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Returns the view id of the agent block rendering `exchange_id`, if any.

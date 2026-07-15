@@ -42,7 +42,7 @@ use crate::tui_code_block_view::{TuiCodeBlockPayload, TuiCodeBlockView, TuiCodeB
 use crate::tui_markdown::{
     render_formatted_table, render_formatted_text, TuiMarkdownBlockHooks, TuiMarkdownPalette,
 };
-use crate::tui_plan_view::{TuiPlanView, TuiPlanViewEvent};
+use crate::tui_plan_view::{TuiPlanView, TuiPlanViewAction, TuiPlanViewEvent};
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct TuiCodeBlockKey {
@@ -515,6 +515,31 @@ impl TuiAIBlock {
     /// styling depends on conversation-wide todo and status state.
     pub(super) fn renders_todos(&self) -> bool {
         self.renders_todos
+    }
+
+    fn latest_exposed_plan(&self, ctx: &AppContext) -> Option<ViewHandle<TuiPlanView>> {
+        let status = self.block_model.status(ctx);
+        let output = status.output_to_render()?;
+        let plan = output.get().messages.iter().rev().find_map(|message| {
+            let AIAgentOutputMessageType::Action(action) = &message.message else {
+                return None;
+            };
+            let Some(TuiToolCallView::Plan(view)) = self.action_views.get(&action.id) else {
+                return None;
+            };
+            view.as_ref(ctx).renders_rich_body().then(|| view.clone())
+        });
+        plan
+    }
+
+    pub(super) fn toggle_latest_plan(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        let Some(plan) = self.latest_exposed_plan(ctx) else {
+            return false;
+        };
+        plan.update(ctx, |plan, ctx| {
+            plan.handle_action(&TuiPlanViewAction::ToggleCollapsed, ctx);
+        });
+        true
     }
 
     /// Invalidates this block and its stateful command child after an owned

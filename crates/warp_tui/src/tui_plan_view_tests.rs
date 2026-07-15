@@ -47,10 +47,16 @@ fn streamed_create_renders_cached_markdown_and_code_children() {
                 .iter()
                 .any(|line| line.trim() == "Build a fast timer."));
             assert!(lines.iter().all(|line| !line.contains("**")));
+            assert_eq!(
+                lines.last().map(|line| line.trim_end()),
+                Some("Ctrl + P to collapse plan")
+            );
             assert!(lines
                 .iter()
                 .skip(1)
-                .filter(|line| !line.is_empty())
+                .filter(|line| {
+                    !line.is_empty() && line.trim_end() != "Ctrl + P to collapse plan"
+                })
                 .all(|line| line.starts_with("    ")));
             assert_eq!(buffer[(0, 1)].bg, Color::Reset);
             assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
@@ -218,7 +224,7 @@ fn collapse_persists_across_payload_updates_and_invalidates_layout() {
         });
 
         view.update(&mut app, |view, ctx| {
-            view.handle_action(&TuiPlanViewAction::SetCollapsed(true), ctx);
+            view.handle_action(&TuiPlanViewAction::ToggleCollapsed, ctx);
             view.sync_action(
                 create_action("create-1", [("Plan", "second body")]),
                 true,

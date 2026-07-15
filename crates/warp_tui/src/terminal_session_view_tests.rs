@@ -10,6 +10,7 @@ use warp::tui_export::{
 };
 use warpui::EntityIdMap;
 use warpui_core::elements::tui::{TuiLayoutContext, TuiViewportWindow, TuiViewportedElement};
+use warpui_core::keymap::{Keystroke, Trigger};
 use warpui_core::App;
 
 use super::{
@@ -113,6 +114,45 @@ fn spawned_user_command_keeps_its_top_level_height() {
         block_list.block_heights().summary().height.as_f64(),
         height_before
     );
+}
+
+#[test]
+fn plan_toggle_registers_ctrl_p_but_move_up_supersedes_it() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            super::init(ctx);
+            crate::input::init(ctx);
+        });
+        app.read(|ctx| {
+            let toggle = ctx
+                .get_binding_by_name("tui:session:toggle_plan")
+                .expect("plan toggle binding");
+            assert_eq!(
+                *toggle.trigger,
+                Trigger::Keystrokes(vec![Keystroke::parse("ctrl-p").unwrap()])
+            );
+
+            let move_up_triggers = ctx
+                .editable_bindings()
+                .filter(|binding| binding.name == "tui:input:move_up")
+                .map(|binding| binding.trigger.clone())
+                .collect::<Vec<_>>();
+            let up = Trigger::Keystrokes(vec![Keystroke::parse("up").unwrap()]);
+            let ctrl_p = Trigger::Keystrokes(vec![Keystroke::parse("ctrl-p").unwrap()]);
+            assert!(move_up_triggers.contains(&up));
+            assert!(move_up_triggers.contains(&ctrl_p));
+
+            let ctrl_p_bindings = ctx
+                .editable_bindings()
+                .filter(|binding| *binding.trigger == ctrl_p)
+                .map(|binding| binding.name)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                ctrl_p_bindings,
+                vec!["tui:input:move_up", "tui:session:toggle_plan"]
+            );
+        });
+    });
 }
 
 #[test]

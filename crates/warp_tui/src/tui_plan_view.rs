@@ -35,7 +35,7 @@ pub(super) enum TuiPlanViewEvent {
 
 #[derive(Clone, Debug)]
 pub(super) enum TuiPlanViewAction {
-    SetCollapsed(bool),
+    ToggleCollapsed,
 }
 
 pub(super) struct TuiPlanView {
@@ -250,16 +250,27 @@ impl TuiView for TuiPlanView {
         let builder = TuiUiBuilder::from_app(app);
         let header_style = builder.primary_text_style().add_modifier(Modifier::BOLD);
         let collapsed = self.collapsed;
-        tui_collapsible(
+        let collapsible = tui_collapsible(
             collapsed,
             [("Planning".to_owned(), header_style)],
             header_style,
             self.header_mouse_state.clone(),
             || self.render_documents(app),
             move |event_ctx, _app| {
-                event_ctx.dispatch_typed_action(TuiPlanViewAction::SetCollapsed(!collapsed));
+                event_ctx.dispatch_typed_action(TuiPlanViewAction::ToggleCollapsed);
             },
-        )
+        );
+        if collapsed {
+            return collapsible;
+        }
+        TuiFlex::column()
+            .child(collapsible)
+            .child(
+                TuiText::new("Ctrl + P to collapse plan")
+                    .with_style(builder.muted_text_style())
+                    .finish(),
+            )
+            .finish()
     }
 }
 
@@ -268,8 +279,8 @@ impl TypedActionView for TuiPlanView {
 
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
-            TuiPlanViewAction::SetCollapsed(collapsed) => {
-                self.collapsed = *collapsed;
+            TuiPlanViewAction::ToggleCollapsed => {
+                self.collapsed = !self.collapsed;
                 self.invalidate_layout(ctx);
             }
         }

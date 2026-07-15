@@ -41,7 +41,7 @@ use warpui_core::elements::tui::{
     TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiText,
 };
 use warpui_core::keymap::macros::*;
-use warpui_core::keymap::FixedBinding;
+use warpui_core::keymap::{EditableBinding, FixedBinding};
 use warpui_core::platform::TerminationMode;
 use warpui_core::r#async::{SpawnedFutureHandle, Timer};
 use warpui_core::{
@@ -192,6 +192,8 @@ pub(crate) enum TuiTerminalSessionAction {
     /// Click on the footer's usage entry: flips the persisted credits⇄cost
     /// display-mode setting.
     ToggleUsageDisplay,
+    /// Toggle the latest exposed inline plan.
+    TogglePlan,
 }
 
 /// The authenticated terminal/session surface rendered inside [`RootTuiView`].
@@ -249,6 +251,17 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_group(TUI_BINDING_GROUP),
     ]);
+    // Placeholder until the final shortcut is chosen. The input's
+    // later-registered Ctrl+P MoveUp binding supersedes this binding while
+    // the input context is active.
+    app.register_editable_bindings([EditableBinding::new(
+        "tui:session:toggle_plan",
+        "Toggle the latest plan",
+        TuiTerminalSessionAction::TogglePlan,
+    )
+    .with_context_predicate(id!(TuiTerminalSessionView::ui_name()))
+    .with_group(TUI_BINDING_GROUP)
+    .with_key_binding("ctrl-p")]);
 }
 
 impl TuiTerminalSessionView {
@@ -1889,6 +1902,10 @@ impl TypedActionView for TuiTerminalSessionView {
                 self.cancel_conversation_restore(ctx);
             }
             TuiTerminalSessionAction::ToggleUsageDisplay => self.toggle_usage_display(ctx),
+            TuiTerminalSessionAction::TogglePlan => {
+                self.transcript
+                    .update(ctx, |transcript, ctx| transcript.toggle_latest_plan(ctx));
+            }
         }
     }
 }
