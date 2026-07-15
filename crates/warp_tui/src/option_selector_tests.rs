@@ -10,6 +10,7 @@ use warpui_core::elements::tui::{
     Modifier, TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiEvent, TuiEventContext,
     TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize,
 };
+use warpui_core::keymap::Keystroke;
 use warpui_core::{App, AppContext, TuiView as _, TypedActionView as _, ViewHandle};
 
 use super::{
@@ -361,9 +362,9 @@ fn act(app: &mut App, selector: &ViewHandle<TuiOptionSelector>, action: TuiOptio
     selector.update(app, |selector, ctx| selector.handle_action(&action, ctx));
 }
 
-/// Confirms the selected item (the card's Enter path).
+/// Confirms the selected item through the selector-owned action.
 fn confirm(app: &mut App, selector: &ViewHandle<TuiOptionSelector>) {
-    selector.update(app, |selector, ctx| selector.confirm_selected(ctx));
+    act(app, selector, TuiOptionSelectorAction::ConfirmSelected);
 }
 
 /// Lays out the selector's element at `width`, returning it with its area.
@@ -892,6 +893,30 @@ fn dispatch(app: &App, selector: &ViewHandle<TuiOptionSelector>, event: &TuiEven
         event_ctx.set_origin_view(Some(EntityId::new()));
         element.dispatch_event(event, &mut event_ctx, app)
     })
+}
+
+/// Builds an unmodified key-down event for `key`.
+fn key_down(key: &str) -> TuiEvent {
+    TuiEvent::KeyDown {
+        keystroke: Keystroke {
+            key: key.to_string(),
+            ..Default::default()
+        },
+        chars: String::new(),
+        details: Default::default(),
+        is_composing: false,
+    }
+}
+
+#[test]
+fn enter_and_numpad_enter_are_consumed_by_the_selector_element() {
+    App::test((), |mut app| async move {
+        let (selector, _) = add_selector(&mut app);
+        set_page(&mut app, &selector, snapshot(&["a"], Some("a")));
+        for key in ["enter", "numpadenter"] {
+            assert!(dispatch(&app, &selector, &key_down(key)), "{key}");
+        }
+    });
 }
 
 #[test]

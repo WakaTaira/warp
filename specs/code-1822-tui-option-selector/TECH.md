@@ -60,12 +60,14 @@ State/API surface for the embedding host:
   to the first item), and discards any in-progress custom-text editing.
 - `refresh_snapshot(snapshot, ctx)` — in-place catalog refresh preserving the
   active selection when it still exists, else falling back to `selected_id`.
-- `confirm_selected(ctx)` — the host's Enter path: enabled rows emit
-  `TuiOptionSelectorEvent::Confirmed { id }`; disabled rows stay selected so their
-  reason remains visible; while the custom-text editor is active it validates
-  (trimmed, non-empty — else an inline "Enter a value to continue." error) and emits
-  `CustomTextSubmitted { value }`. While search owns focus, Enter confirms the first
-  enabled filtered row, skipping disabled matches.
+- `confirm_selected(ctx)` — the shared confirmation core used by the selector's
+  Enter/Numpad Enter action and by hosts that need to combine confirmation with
+  another interaction. Enabled rows emit `TuiOptionSelectorEvent::Confirmed { id }`;
+  disabled rows stay selected so their reason remains visible; while the custom-text
+  editor is active it validates (trimmed, non-empty — else an inline
+  "Enter a value to continue." error) and emits `CustomTextSubmitted { value }`.
+  While search owns focus, confirmation selects the first enabled filtered row,
+  skipping disabled matches.
 - `handle_back(ctx) -> bool` — the host's Escape path: cancels active custom-text
   editing and reports whether the key was consumed, so the host only leaves the page
   when the selector had nothing to unwind.
@@ -79,8 +81,10 @@ State/API surface for the embedding host:
 Focus and element-level input (via the private `SelectorInputElement` wrapper, active only
 while the selector is rendered as the blocking interaction):
 - The list and embedded editors are real focus zones. `set_page` focuses the selector;
-  boundary arrows move focus between the selector and search editor. Card keybindings
-  continue to resolve through the editor's ancestor responder chain.
+  boundary arrows move focus between the selector and search editor.
+- Enter and Numpad Enter dispatch `ConfirmSelected` from the selector element, so
+  row, search-result, retry, and custom-text confirmation stay reusable host-agnostic
+  behavior.
 - Up/Down move the selection, scrolling to keep it visible. Search behaves as
   the final item in the cycle: Up from the first row focuses search, Up from
   search selects the last row, Down from the last row focuses search, and Down
@@ -94,8 +98,8 @@ while the selector is rendered as the blocking interaction):
 - Search and custom text use the shared `TuiEditorView`; printable characters, cursor,
   selection, paste, and model-backed editing come from `CodeEditorModel` and
   `TuiEditorElement`. Single-line paste inserts only its first line. Escape remains
-  selector/card policy: it clears a non-empty search first, cancels custom editing,
-  or leaves the page.
+  host policy with a selector fallback: it clears a non-empty search first, cancels
+  custom editing, or leaves the page.
 - An element-level Escape fallback emits `Dismissed` for hosts without their own
   Escape binding; the embedding card's keymap normally consumes Escape first.
 
@@ -145,8 +149,8 @@ the application prompt input
   consumer's stable `tui:input:*` /
   `tui:editor:*` names and concrete action type. Common horizontal/word/line
   movement, deletion, selection, undo, and redo keys are specified once. Vertical
-  movement, Enter, Escape, Tab, and kill/yank remain input/host policy so search
-  continues to propagate Up/Down to the selector.
+  movement, Escape, Tab, and kill/yank remain input/host policy so search continues
+  to propagate Up/Down to the selector; selector confirmation owns Enter.
 - Mouse-originated selection actions focus the editor before applying cursor or
   selection changes, matching GUI editor mouse-down behavior; the outer hoverable
   remains as the first-mouse fallback.
@@ -167,6 +171,7 @@ until the card slice; that slice removes the allow.
 
 - `crates/warp_tui/src/option_selector_tests.rs` covers: field label/position/prompt
   rendering and initial selection from `selected_id`; Up/Down + Enter confirmation;
+  selector-element handling for Enter and Numpad Enter;
   digit confirmation, including viewport-relative digits in scrolled lists; scrolling
   to keep the selection visible with overflow markers; disabled rows being
   selectable but not confirmable via Enter, digit, or click; Loading/Empty status

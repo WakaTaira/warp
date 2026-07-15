@@ -5,12 +5,11 @@
 //! scrolling, optional Loading/Failed/Empty status rows, and an optional
 //! custom-text footer editor.
 //!
-//! Enter/Escape are owned by the embedding card's keymap bindings and arrive
-//! through [`TuiOptionSelector::confirm_selected`] /
-//! [`TuiOptionSelector::handle_back`]; arrows, viewport-relative digits,
-//! printable characters, clicks, and wheel scrolling are handled at the
-//! element level since the selector is only rendered while its card is the
-//! active blocking interaction.
+//! Enter, Numpad Enter, arrows, viewport-relative digits, printable
+//! characters, clicks, and wheel scrolling are handled at the element level
+//! since the selector is only rendered while its host is the active blocking
+//! interaction. Escape remains host policy, with an element-level fallback
+//! through [`TuiOptionSelector::handle_back`].
 
 use warp::tui_export::{OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus};
 use warp_search_core::inline_menu::InlineMenuSelection;
@@ -89,6 +88,8 @@ pub(crate) enum TuiOptionSelectorEvent {
 /// User interactions dispatched from the selector's element tree.
 #[derive(Clone, Debug)]
 pub(crate) enum TuiOptionSelectorAction {
+    /// Confirm the currently selected item.
+    ConfirmSelected,
     MoveUp,
     MoveDown,
     /// Select the viewport-relative item and confirm it when enabled.
@@ -874,6 +875,7 @@ impl TuiView for TuiOptionSelector {
 impl TypedActionView for TuiOptionSelector {
     fn handle_action(&mut self, action: &TuiOptionSelectorAction, ctx: &mut ViewContext<Self>) {
         match action {
+            TuiOptionSelectorAction::ConfirmSelected => self.confirm_selected(ctx),
             TuiOptionSelectorAction::MoveUp => self.move_selection(false, ctx),
             TuiOptionSelectorAction::MoveDown => self.move_selection(true, ctx),
             TuiOptionSelectorAction::SelectNumberedOption(digit) => {
@@ -909,7 +911,7 @@ impl TypedActionView for TuiOptionSelector {
 }
 
 /// Wraps the selector's rendered content and translates element-level input
-/// (arrows, digits, custom-text characters, wheel scrolling) into
+/// (confirmation, arrows, digits, custom-text characters, wheel scrolling) into
 /// [`TuiOptionSelectorAction`]s.
 struct SelectorInputElement {
     child: Box<dyn TuiElement>,
@@ -965,6 +967,10 @@ impl TuiElement for SelectorInputElement {
                     return false;
                 }
                 match keystroke.key.as_str() {
+                    "enter" | "numpadenter" => {
+                        event_ctx.dispatch_typed_action(TuiOptionSelectorAction::ConfirmSelected);
+                        true
+                    }
                     "escape" => {
                         // Escape fallback for hosts without their own
                         // Escape keymap binding; the embedding card's
