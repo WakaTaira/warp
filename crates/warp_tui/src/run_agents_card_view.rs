@@ -38,7 +38,7 @@ use warpui_core::{
 use crate::agent_block_sections::render_fallback_tool_call_section;
 use crate::agent_identity::{assign_agent_identity_indices, AgentIdentity};
 use crate::keybindings::TUI_BINDING_GROUP;
-use crate::option_selector::{OptionSelectorHeader, TuiOptionSelector, TuiOptionSelectorEvent};
+use crate::option_selector::{OptionSelectorPage, TuiOptionSelector, TuiOptionSelectorEvent};
 use crate::tui_builder::TuiUiBuilder;
 
 const RUN_AGENTS_CARD_TITLE: &str = "Can I start additional agents for this task?";
@@ -460,7 +460,7 @@ impl TuiRunAgentsCardView {
         }
     }
 
-    /// Opens `page`: swaps the selector to its snapshot and header, and
+    /// Opens `page`: swaps the selector to its page fields, and
     /// lazily fetches auth secrets for the API-key page (the same lazy fetch
     /// the GUI triggers on picker population).
     fn open_page(&mut self, page: ConfigPage, ctx: &mut ViewContext<Self>) {
@@ -472,14 +472,15 @@ impl TuiRunAgentsCardView {
         let sequence =
             Self::page_sequence(&self.orchestration_edit_state.orchestration_config_state);
         let position = sequence.iter().position(|p| *p == page).unwrap_or(0) + 1;
-        let header = OptionSelectorHeader {
-            title: "Edit agent configuration".to_string(),
+        let selector_page = OptionSelectorPage {
+            field_label: "Edit agent configuration".to_string(),
             position: (position, sequence.len()),
-            question: page.question(self.request_fields.agent_run_configs.len()),
+            prompt: page.question(self.request_fields.agent_run_configs.len()),
+            snapshot: self.snapshot_for_page(page, ctx),
+            searchable: page.is_searchable(),
         };
-        let snapshot = self.snapshot_for_page(page, ctx);
         self.selector.update(ctx, |selector, ctx| {
-            selector.set_page(header, snapshot, page.is_searchable(), ctx);
+            selector.set_page(selector_page, ctx);
         });
         ctx.emit(TuiRunAgentsCardViewEvent::BlockingStateChanged);
         ctx.notify();
@@ -592,7 +593,7 @@ impl TuiRunAgentsCardView {
         }
     }
 
-    /// Moves to an adjacent page without applying the current highlight.
+    /// Moves to an adjacent page without applying the current selection.
     fn navigate_page(&mut self, forward: bool, ctx: &mut ViewContext<Self>) {
         let CardMode::Configuring { page } = self.mode else {
             return;
@@ -640,7 +641,7 @@ impl TuiRunAgentsCardView {
                 self.refresh_active_page(ctx);
             }
             TuiOptionSelectorEvent::Dismissed => self.handle_back(ctx),
-            TuiOptionSelectorEvent::LayoutChanged => {
+            TuiOptionSelectorEvent::LayoutInvalidated => {
                 // The selector grew or shrank (e.g. scrolling toggled an
                 // overflow marker); ancestors re-measure the card's cached
                 // height so the footer is not clipped.
@@ -713,7 +714,7 @@ impl TuiRunAgentsCardView {
     }
 
     /// Escape from configuration: completed pages keep their confirmed
-    /// selections; the current page's unconfirmed highlight is discarded.
+    /// selections; the current page's unconfirmed selection is discarded.
     /// Active custom-text editing unwinds first.
     fn handle_back(&mut self, ctx: &mut ViewContext<Self>) {
         let consumed = self
@@ -729,10 +730,10 @@ impl TuiRunAgentsCardView {
         }
     }
 
-    /// Confirms the selector's highlighted option (Enter).
+    /// Confirms the selector's selected option (Enter).
     fn handle_confirm_selection(&mut self, ctx: &mut ViewContext<Self>) {
         self.selector.update(ctx, |selector, ctx| {
-            selector.confirm_highlighted(ctx);
+            selector.confirm_selected(ctx);
         });
     }
 

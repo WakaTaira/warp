@@ -36,12 +36,14 @@ New `TuiToolCallView::RunAgents(ViewHandle<TuiRunAgentsCardView>)` variant, cons
 View state: `action_id`, an `OrchestrationEditState` + card fields (`agent_run_configs`, `base_prompt`, `summary`, `skills`, `plan_id`, `original_tool_call_request`), `mode: Acceptance | Configuring { page }`, the active `TuiOptionSelector` handle, model handles (`BlocklistAIActionModel`, `RunAgentsExecutor`), and the identity palette captured at construction.
 
 - Shared card chrome: a persistent yellow-square permission title on a header row tinted with the surface overlay applied twice, over a 10%-magenta body in both modes; the body is inset three cells with one row of vertical padding. Acceptance renders the wrapping colored agent-identity line and one wrapping inline `Label: value` metadata row (bold values, muted bullets); the request summary is not repeated inside the card. Configuration renders `Edit agent configuration`, right-aligned `← n of m →`, a blank row, a bold singular/plural-aware question, and the selector. Each mode's styled key hints render below, outside the tinted surface (acceptance: `Enter to accept  Ctrl + E to edit Ctrl + C to reject`).
-- Keybindings registered in `run_agents_card_view::init` (added to `keybindings.rs`, `tui:`/`TUI_BINDING_GROUP` conventions): `enter` → Accept/Confirm, `ctrl-e` → Configure, `esc` → Back, `ctrl-c` → Reject, `left` → PreviousPage, and `right`/`tab` → NextPage. Horizontal navigation clamps at sequence boundaries and does not apply the current option highlight.
+- Keybindings registered in `run_agents_card_view::init` (added to `keybindings.rs`, `tui:`/`TUI_BINDING_GROUP` conventions): `enter` → Accept/Confirm, `ctrl-e` → Configure, `esc` → Back, `ctrl-c` → Reject, `left` → PreviousPage, and `right`/`tab` → NextPage. Horizontal navigation clamps at sequence boundaries and does not apply the current option selection.
 - Page sequencing: `ConfigPage { Location, Harness, ApiKey, Host, Environment, Model }`; `sequence(state)` returns the dynamic page list (Cloud: 5 + API-key page when `should_show_auth_secret_picker`; Local: `[Location, Model]`). Confirmations call the shared transition methods (`state.apply_execution_mode_change`, `session.apply_harness_change`, `state.apply_auth_secret_change`, `set_worker_host` + `persist_host_selection`, `set_environment_id` + `persist_environment_selection`, `model_id` assignment) and advance; the final page returns to Acceptance.
 - Search: only `ConfigPage::Model` opts into `TuiOptionSelector` search. The pinned
   `Search:` editor stays above the model viewport; the list starts on the selected
-  model so numeric shortcuts remain immediate, while Up from the top model focuses
-  search and Down restores the first filtered model.
+  model so numeric shortcuts remain immediate. Search is the final item in the
+  navigation cycle: Up from the first model focuses Search, Up from Search selects
+  the last filtered model, Down from the last model focuses Search, and Down from
+  Search selects the first filtered model.
 - Accept: guard with `accept_disabled_reason_with_auth`; on `Some(reason)` render the reason inline and stay active (PRODUCT 53); on `None` build the request exactly as `RunAgentsEditState::to_request` does (auth via `state.auth_secret_name()`, preserved `computer_use_enabled`) and call `action_model.execute_run_agents(&action_id, request, ctx)` — the same shared path the GUI uses.
 - Reject: emit an event the owning `TuiAIBlock` maps to `cancel_action_with_id(conversation_id, &action_id, CancellationReason::ManuallyCancelled, ctx)`, matching the GUI's `RejectRequested` semantics (`deny_run_agents` remains reserved for disapproved-config denial, which the TUI does not surface).
 - Subscriptions: `RunAgentsExecutorEvent` (spawning presentation), `BlocklistAIActionEvent` (blocked/finished transitions), `HarnessAvailabilityEvent` (`Changed`, `AuthSecretsLoaded`, `AuthSecretsFetchFailed`, `AuthSecretDeleted` → `revalidate_after_catalog_change` + refresh the active selector snapshot), `LLMPreferencesEvent` (Oz model catalog), `ConnectedSelfHostedWorkersEvent` (host list). Retry from a `Failed` API-key page calls `HarnessAvailabilityModel::ensure_auth_secrets_fetched` — the same lazy fetch the GUI triggers on picker population.
@@ -71,9 +73,9 @@ So the TUI card tests can exercise the real accept/reject paths:
 TUI render-to-lines tests (`run_agents_card_view_tests.rs`, `option_selector_tests.rs`, extended `agent_block_tests.rs`/`keybindings_tests.rs`, per the `tui-testing` conventions):
 - Acceptance card content, wrapping at 40/80/132 columns, and themed colors in dark/light/custom themes — PRODUCT (9-15, 17).
 - Identity stability across re-renders/edits and deterministic cycling at >palette size — PRODUCT (11-13).
-- Figma hierarchy/style: persistent title, exact inner indentation and blank rows, right-aligned arrow position, parenthesized option numbers, bold magenta selection, four-row viewport, and external footer styling.
-- Page order, dynamic counts, Local collapse to 2 pages, mid-flow location switch, and clamped Tab/Left/Right navigation that does not commit unconfirmed highlights.
-- Selector behavior: highlight movement, viewport-relative 1-9, click/wheel, disabled rows, loading/failed/retry/empty, custom-host validation, selection preservation across snapshot refresh — PRODUCT (23-37, 43, 47-50).
+- Figma hierarchy/style: persistent title, exact inner indentation and blank rows, right-aligned arrow position, parenthesized option numbers, bold magenta selection, six-row viewport, and external footer styling.
+- Page order, dynamic counts, Local collapse to 2 pages, mid-flow location switch, and clamped Tab/Left/Right navigation that does not commit unconfirmed selections.
+- Selector behavior: selection movement, viewport-relative 1-9, click/wheel, disabled rows, loading/failed/retry/empty, custom-host validation, selection preservation across snapshot refresh — PRODUCT (23-37, 43, 47-50).
 - Model-page search: selector-owned `Search:` chrome, list-first focus, digit
   shortcuts, digit-containing queries, filtering/no-match rendering, and first-match
   confirmation; non-model pages render no search editor.
@@ -94,6 +96,6 @@ The work ships as a four-PR Graphite stack, each mergeable on its own:
 4. The final PR (this spec's remaining scope) — the TUI RunAgents card, generalized input replacement, theming and agent identity, and the frontend test seams, reviewed against the PRODUCT invariants.
 
 ## Risks and mitigations
-- Catalog events arriving mid-configuration can reshape option lists — the selector preserves the highlighted id when still present; disappearance surfaces the PRODUCT (50) unavailability copy rather than silently reselecting.
+- Catalog events arriving mid-configuration can reshape option lists — the selector preserves the selected id when still present; disappearance surfaces the PRODUCT (50) unavailability copy rather than silently reselecting.
 - Focus derivation vs. event ordering: `SpawningStarted` must flip `wants_focus` before the next render; both arrive through the same entity-event loop, and the render-time derivation (not cached state) makes late events self-correcting.
 - Theme switches would rebuild the identity palette; the card pins its palette at construction so in-flight requests keep stable identities, at the cost of using pre-switch colors until the next request.

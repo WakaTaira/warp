@@ -576,10 +576,10 @@ fn scrolling_a_long_option_list_requests_a_card_remeasure() {
         let fixture = blocked_card(&mut app, &request("oz", remote("env-1", "warp")));
         act(&mut app, &fixture.card, TuiRunAgentsCardAction::Configure);
         let selector = app.read(|app| fixture.card.as_ref(app).selector.clone());
-        // Give the page more rows than the viewport so moving the highlight
+        // Give the page more rows than the viewport so moving the selection
         // eventually scrolls and toggles an overflow marker.
         selector.update(&mut app, |selector, ctx| {
-            let rows = (0..6)
+            let rows = (0..8)
                 .map(|index| OptionRow {
                     id: format!("row-{index}"),
                     label: format!("row-{index}"),
@@ -602,7 +602,7 @@ fn scrolling_a_long_option_list_requests_a_card_remeasure() {
 
         // Scrolling past the viewport reveals the `↑` marker: the card asks
         // its ancestors to re-measure so the taller card is not clipped.
-        for _ in 0..4 {
+        for _ in 0..6 {
             selector.update(&mut app, |selector, ctx| {
                 selector.handle_action(&TuiOptionSelectorAction::MoveDown, ctx);
             });
@@ -620,7 +620,7 @@ fn switching_to_local_mid_flow_collapses_the_sequence() {
     App::test((), |mut app| async move {
         let fixture = blocked_card(&mut app, &request("oz", remote("env-1", "warp")));
         act(&mut app, &fixture.card, TuiRunAgentsCardAction::Configure);
-        // Highlight "Local" (second row) and confirm it: the sequence
+        // Select "Local" (second row) and confirm it: the sequence
         // collapses to Location, Model and advances to Model.
         let selector = app.read(|app| fixture.card.as_ref(app).selector.clone());
         selector.update(&mut app, |selector, ctx| {
@@ -639,12 +639,12 @@ fn switching_to_local_mid_flow_collapses_the_sequence() {
 }
 
 #[test]
-fn horizontal_navigation_moves_between_pages_without_applying_highlights() {
+fn horizontal_navigation_moves_between_pages_without_applying_selections() {
     App::test((), |mut app| async move {
         let fixture = blocked_card(&mut app, &request("oz", remote("env-1", "warp")));
         act(&mut app, &fixture.card, TuiRunAgentsCardAction::Configure);
 
-        // Highlight Local, then navigate away without confirming it.
+        // Select Local, then navigate away without confirming it.
         let selector = app.read(|app| fixture.card.as_ref(app).selector.clone());
         selector.update(&mut app, |selector, ctx| {
             selector.handle_action(&TuiOptionSelectorAction::MoveDown, ctx);
